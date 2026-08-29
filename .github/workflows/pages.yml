@@ -1,0 +1,46 @@
+# Deploys the static client in `web/` to GitHub Pages.
+#
+# One-time setup in the repository: Settings -> Pages -> Source: **GitHub Actions**. Without that the
+# deploy step fails with a permissions error that does not mention the setting.
+#
+# The page then calls bstream directly from the Pages origin, so that origin has to be in bstream's
+# `MA_CORS_ORIGIN` allowlist — it is an allowlist, not a wildcard, and a missing entry shows up as a
+# CORS failure in the browser console rather than as anything server-side.
+name: Deploy page
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "web/**"
+      - ".github/workflows/pages.yml"
+  # So a deploy can be triggered without a code change, e.g. after changing the Pages setting.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time, and let a newer push win rather than queueing behind an older one.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # No build step on purpose: the page is plain ES modules, so the directory is the artifact.
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+
+      - id: deploy
+        uses: actions/deploy-pages@v4

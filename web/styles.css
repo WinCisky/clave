@@ -1,0 +1,259 @@
+/**
+ * Deliberately plain: one stylesheet, no framework, no build. The only thing here that is trying
+ * hard is the grid, because the grid is the thing being demonstrated.
+ */
+
+:root {
+  color-scheme: light dark;
+
+  --bg: #ffffff;
+  --panel: #f6f8fa;
+  --border: #d0d7de;
+  --text: #1f2328;
+  --muted: #59636e;
+  --accent: #0969da;
+  --danger: #cf222e;
+  --warn: #9a6700;
+
+  /* GitHub's contribution ramp, which is what the grid is imitating. */
+  --cell-0: #ebedf0;
+  --cell-1: #9be9a8;
+  --cell-2: #40c463;
+  --cell-3: #30a14e;
+  --cell-4: #216e39;
+  --cell-inflight: #d4a72c;
+  --cell-bad: #cf222e;
+
+  --cell-size: 11px;
+  --cell-gap: 3px;
+  --radius: 6px;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1117;
+    --panel: #151b23;
+    --border: #3d444d;
+    --text: #e6edf3;
+    --muted: #9198a1;
+    --accent: #4493f8;
+    --danger: #f85149;
+    --warn: #d29922;
+
+    --cell-0: #191f28;
+    --cell-1: #033a16;
+    --cell-2: #196c2e;
+    --cell-3: #2ea043;
+    --cell-4: #56d364;
+    --cell-inflight: #bb8009;
+    --cell-bad: #f85149;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 24px 20px 64px;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+main { max-width: 1000px; margin: 0 auto; }
+
+header { margin-bottom: 24px; }
+header h1 { margin: 0 0 4px; font-size: 20px; letter-spacing: -0.01em; }
+header p { margin: 0; color: var(--muted); }
+header code { font-family: var(--mono); font-size: 12px; }
+
+/* --- steps ------------------------------------------------------------------------------------ */
+
+.step {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  margin-bottom: 16px;
+  overflow: hidden;
+}
+.step[hidden] { display: none !important; }
+.step > header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel) 70%, var(--bg));
+}
+.step > header h2 { margin: 0; font-size: 14px; font-weight: 600; }
+.step > .body { padding: 16px; }
+
+.badge {
+  flex: 0 0 auto;
+  width: 22px; height: 22px;
+  border-radius: 999px;
+  display: grid; place-items: center;
+  font-size: 12px; font-weight: 600;
+  background: var(--border);
+  color: var(--text);
+}
+.step.active .badge { background: var(--accent); color: #fff; }
+.step.done .badge { background: var(--cell-3); color: #fff; }
+.step-note { margin-left: auto; color: var(--muted); font-size: 12px; }
+
+/* --- controls --------------------------------------------------------------------------------- */
+
+label { display: block; font-weight: 600; margin-bottom: 6px; font-size: 13px; }
+
+input[type="text"], textarea, select {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+textarea { resize: vertical; min-height: 62px; }
+input[type="text"]:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
+
+button {
+  padding: 7px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.primary:hover:not(:disabled) { filter: brightness(1.1); color: #fff; }
+button.danger:hover:not(:disabled) { border-color: var(--danger); color: var(--danger); }
+
+.hint { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
+.hint code { font-family: var(--mono); }
+
+.message { margin-top: 12px; padding: 10px 12px; border-radius: var(--radius); font-size: 13px; }
+.message.error { background: color-mix(in srgb, var(--danger) 12%, transparent); color: var(--danger); }
+.message.warn { background: color-mix(in srgb, var(--warn) 14%, transparent); color: var(--warn); }
+.message.info { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); }
+.message[hidden] { display: none; }
+
+.examples { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.examples button { font-size: 12px; padding: 4px 9px; font-family: var(--mono); }
+
+/* --- file chooser ----------------------------------------------------------------------------- */
+
+.files { display: flex; flex-direction: column; gap: 6px; }
+
+.file {
+  display: flex; align-items: center; gap: 12px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  cursor: pointer;
+  text-align: left;
+}
+.file:hover:not(:disabled) { border-color: var(--accent); }
+.file[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.file:disabled { opacity: 0.45; cursor: not-allowed; }
+.file .name { flex: 1 1 auto; font-family: var(--mono); font-size: 12px; word-break: break-all; }
+.file .meta { flex: 0 0 auto; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.file .tag {
+  flex: 0 0 auto; font-size: 11px; padding: 2px 7px; border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent);
+}
+
+details.others { margin-top: 12px; }
+details.others summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+details.others .files { margin-top: 8px; }
+
+/* --- stats ------------------------------------------------------------------------------------ */
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.stat { min-width: 0; }
+.stat dt { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+.stat dd {
+  margin: 2px 0 0;
+  font-family: var(--mono);
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+progress {
+  width: 100%; height: 8px; margin-bottom: 16px;
+  appearance: none; border: none; border-radius: 999px;
+  background: var(--cell-0); overflow: hidden;
+}
+progress::-webkit-progress-bar { background: var(--cell-0); }
+progress::-webkit-progress-value { background: var(--cell-3); }
+progress::-moz-progress-bar { background: var(--cell-3); }
+
+/* --- the grid --------------------------------------------------------------------------------- */
+
+.grid-wrap {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  padding: 12px;
+  overflow-x: auto;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, var(--cell-size));
+  gap: var(--cell-gap);
+  justify-content: start;
+}
+
+.grid i {
+  width: var(--cell-size);
+  height: var(--cell-size);
+  border-radius: 2px;
+  background: var(--cell-0);
+  /* An inset border rather than a real one, so a cell never changes size when it changes state. */
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 6%, transparent);
+}
+/* Verified. The two greens separate the bootstrap windows from the sequential body, which is what
+   makes it visible that the head and tail arrive first. */
+.grid i.ok { background: var(--cell-2); box-shadow: none; }
+.grid i.ok.boot { background: var(--cell-4); }
+.grid i.inflight { background: var(--cell-inflight); box-shadow: none; }
+.grid i.bad { background: var(--cell-bad); box-shadow: none; }
+
+.legend {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  margin-top: 12px; color: var(--muted); font-size: 12px;
+}
+.legend span { display: inline-flex; align-items: center; gap: 5px; }
+.legend i { width: 11px; height: 11px; border-radius: 2px; display: inline-block; }
+
+.log {
+  margin-top: 16px;
+  max-height: 132px;
+  overflow-y: auto;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+.log div { padding: 1px 0; }
+.log div.bad { color: var(--danger); }

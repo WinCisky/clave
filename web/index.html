@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>clave — torrent piece recovery</title>
+<meta name="description" content="Recover a torrent's pieces to local browser storage through a Cloudflare Worker relay, verifying every piece against the torrent's own SHA-1 hashes.">
+<link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+<main>
+  <header>
+    <h1>clave</h1>
+    <p>
+      Pulls one video out of a BitTorrent swarm through a Cloudflare Worker relay and stores it in
+      this browser. Every piece is verified here against the torrent's own SHA-1 hashes — the relay
+      sends them unverified and never checks anything.
+    </p>
+  </header>
+
+  <!-- Step 1 ---------------------------------------------------------------------------------- -->
+  <section class="step active" id="step-magnet">
+    <header>
+      <span class="badge">1</span>
+      <h2>Magnet</h2>
+      <span class="step-note" id="magnet-note"></span>
+    </header>
+    <div class="body">
+      <label for="magnet">Magnet link, or a 40-character infohash</label>
+      <textarea id="magnet" spellcheck="false" placeholder="magnet:?xt=urn:btih:…"></textarea>
+      <div class="row">
+        <button class="primary" id="resolve">Resolve</button>
+        <button id="reset" class="danger" hidden>Start over</button>
+      </div>
+      <p class="hint">
+        A magnet the relay has not seen before is resolved first, which walks the swarm for its
+        metadata and can take a few seconds. A bare infohash only works once that has happened.
+      </p>
+      <div class="examples" id="examples"></div>
+      <div class="message" id="magnet-message" hidden></div>
+    </div>
+  </section>
+
+  <!-- Step 2 ---------------------------------------------------------------------------------- -->
+  <section class="step" id="step-file" hidden>
+    <header>
+      <span class="badge">2</span>
+      <h2>File</h2>
+      <span class="step-note" id="file-note"></span>
+    </header>
+    <div class="body">
+      <div class="files" id="videos"></div>
+      <details class="others" id="others-wrap" hidden>
+        <summary id="others-summary">Other files</summary>
+        <div class="files" id="others"></div>
+      </details>
+      <div class="message" id="file-message" hidden></div>
+    </div>
+  </section>
+
+  <!-- Step 3 ---------------------------------------------------------------------------------- -->
+  <section class="step" id="step-recover" hidden>
+    <header>
+      <span class="badge">3</span>
+      <h2>Recover</h2>
+      <span class="step-note" id="recover-note"></span>
+    </header>
+    <div class="body">
+      <dl class="stats">
+        <div class="stat"><dt>Pieces</dt><dd id="s-pieces">—</dd></div>
+        <div class="stat"><dt>Written</dt><dd id="s-bytes">—</dd></div>
+        <div class="stat"><dt>Rate</dt><dd id="s-rate">—</dd></div>
+        <div class="stat"><dt>Elapsed</dt><dd id="s-elapsed">—</dd></div>
+        <div class="stat"><dt>Remaining</dt><dd id="s-eta">—</dd></div>
+        <div class="stat"><dt>Peers</dt><dd id="s-peers">—</dd></div>
+        <div class="stat"><dt>Dialling</dt><dd id="s-dials">—</dd></div>
+        <div class="stat"><dt>Re-fetched</dt><dd id="s-naks">0</dd></div>
+        <div class="stat"><dt>Epoch</dt><dd id="s-epoch">0</dd></div>
+      </dl>
+
+      <progress id="bar" value="0" max="1"></progress>
+
+      <div class="grid-wrap">
+        <div class="grid" id="grid" role="img" aria-label="Recovered pieces"></div>
+      </div>
+      <div class="legend">
+        <span><i style="background:var(--cell-0);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--text) 6%,transparent)"></i> not yet</span>
+        <span><i style="background:var(--cell-inflight)"></i> in flight</span>
+        <span><i style="background:var(--cell-2)"></i> verified</span>
+        <span><i style="background:var(--cell-4)"></i> verified (bootstrap: head &amp; tail first)</span>
+        <span><i style="background:var(--cell-bad)"></i> failed SHA-1, re-fetching</span>
+      </div>
+
+      <div class="row">
+        <button class="primary" id="start">Start</button>
+        <button id="pause" disabled>Pause</button>
+        <input type="number" id="seek-piece" min="0" placeholder="piece" disabled
+               style="width:96px;flex:0 0 auto">
+        <button id="seek" disabled>Seek</button>
+        <button id="save" disabled>Save file</button>
+        <button id="clear" class="danger">Clear storage</button>
+      </div>
+
+      <div class="message" id="recover-message" hidden></div>
+      <div class="log" id="log"></div>
+    </div>
+  </section>
+</main>
+
+<script type="module" src="./app.js"></script>
+</body>
+</html>

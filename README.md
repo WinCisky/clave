@@ -145,6 +145,90 @@ Tests run **inside workerd** via `@cloudflare/vitest-pool-workers`, against the 
 `--max-workers=1 --no-isolate` (Durable Object WebSockets are unsupported under per-file storage
 isolation). Dialling a live swarm cannot be hermetic, so that part is the integration run above.
 
+## The browser client
+
+`web/` is a static three-step page — no framework, no build step — that does the client half of the
+contract for real: it resolves a magnet, offers a choice when a torrent holds more than one video,
+and recovers the pieces into the browser's own filesystem, showing progress as a
+GitHub-contributions-style grid.
+
+```bash
+node scripts/devserver.mjs          # then open http://localhost:8080/?bstream=/bstream
+```
+
+| file | job |
+| --- | --- |
+| `web/index.html`, `styles.css` | the three steps, the grid, the legend |
+| `web/app.js` | step machine, file chooser, grid painting, stats. Touches no video bytes |
+| `web/stream-worker.js` | a Web Worker owning the WebSocket, SHA-1 and OPFS writes |
+| `web/wsproto.js` | browser mirror of `src/wsproto.ts` |
+| `web/torrent.js` | magnet parsing, piece arithmetic, video detection |
+| `web/config.js` | endpoints, overridable per-load with `?bstream=` / `?worker=` |
+
+**The stream lives in a Web Worker** for three reasons, none of them stylistic: OPFS
+`createSyncAccessHandle()` — the positional-write path — exists only in a worker; hashing ~1000
+pieces while writing at several MiB/s would visibly stutter the grid; and the page then holds no
+protocol detail at all.
+
+`web/wsproto.js` duplicates the contract, so `test/wsproto-mirror.test.ts` round-trips fixtures
+through the TypeScript encoder and the browser decoder. Drift here is silent — a changed header size
+does not throw, it shifts every piece index and presents as universally failing hashes.
+
+**Storage and resume.** The video goes to OPFS under `<infohash>/<filename>`, sized up front, beside
+a bit-packed `<filename>.bitmap` of which pieces are verified. The session name is
+`<infohash>-<fileIndex>`, so a reload resumes *both* halves: the relay restores its scheduler
+snapshot, and the bitmap stops the page re-requesting what it already holds. `?fresh` forces a new
+session, `?corrupt=N` pretends piece N failed its hash, `?credit=N` sets the opening grant.
+
+### Verified in the browser
+
+Against the live swarm, through the deployed relay:
+
+| torrent | result |
+| --- | --- |
+| Big Buck Bunny — 3 files, 1 video | step 2 auto-skips; **1054/1054 verified, 0 bad**, 263 MiB in 56 s; OPFS file byte-exact at 276,134,947 with a real `ftyp`/`isom` header |
+| Sintel — 11 files (9 subtitle tracks), 1 video | one video found among eleven; **987/987 verified**; OPFS file byte-exact at 129,241,752 |
+| archive.org `BigBuckBunny_124` — **3 videos** | step 2 offers the choice; picking the 45 MiB `.ogv` streams **pieces 752-841**, a file starting mid-torrent; **90/90 verified**; resolved from a magnet bstream had never seen |
+| archive.org `ElephantsDream` — 8 videos | **does not resolve.** bstream finds 10 peers but none serve metadata inside 45 s. The page reports bstream's own error verbatim instead of hanging |
+
+Also checked: a malformed magnet and an unknown bare infohash each produce a distinct, accurate
+message; `?corrupt=800` produces a red cell, a NAK, and a green cell after the re-fetch; Clear
+storage frees exactly the file's bytes; the grid's dark-green cells show the head and tail windows
+arriving before the middle, which is the bootstrap policy made visible.
+
+### Four bugs the browser client found in the relay
+
+The Node client never reconnected, so none of these had ever been exercised:
+
+- **A reconnect landed behind a corpse.** `getWebSockets()` is ordered oldest-first, and a closed
+  page's socket outlives it briefly, so every frame — `ready` included — went to the dead socket
+  while the live client sat there looking at a swarm with no peers. A new connection now closes the
+  ones it replaces, and the session always addresses the newest.
+- **A warm object never greeted a reconnect.** The greeting was tied to building the scheduler, so
+  the second connection to a still-resident object got no `ready`, hence no layout and nothing to do.
+  It is now per-connection.
+- **A finished session told a reconnecting client nothing**, so a client missing pieces waited
+  forever. It now re-announces `eof` once per connection.
+- **"Sent" and "held" can disagree**, and the protocol has no `have` message for the client to
+  correct the relay with. It does not need one: a piece the client lacks is indistinguishable from
+  one that failed its hash, so the client NAKs the shortfall on `eof`. Measured recovering 479
+  pieces lost to the stale socket, ending at 987/987.
+
+## Deploying the page
+
+`.github/workflows/pages.yml` uploads `web/` and deploys it on a push to the default branch. Two
+things are needed once, and neither is discoverable from an error message:
+
+1. Repository -> Settings -> Pages -> Source: **GitHub Actions**.
+2. Add the Pages origin to `MA_CORS_ORIGIN` on the bstream VPS and restart it. bstream's CORS is an
+   **allowlist**, not a wildcard — measured, `https://wincisky.github.io` is allowed while
+   `http://localhost:8080` and any other origin get no `access-control-allow-origin` header at all,
+   which the browser reports as a CORS failure with nothing wrong server-side. Adding
+   `http://localhost:8080` and `http://127.0.0.1:8080` too makes `scripts/devserver.mjs`'s proxy
+   unnecessary.
+
+This directory is not a git repository yet, so the workflow has nothing to run in until it is one.
+
 ## Configuration
 
 Every cost lever lives in `src/config.ts`, read from `wrangler.jsonc` vars, and every read falls

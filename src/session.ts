@@ -150,6 +150,16 @@ export class Session extends DurableObject<Bindings> {
   #inbound = 0;
   #lastStatAt = 0;
   #closing = false;
+  /**
+   * Whether the *current* connection has been greeted.
+   *
+   * Not a property of the scheduler: a reconnect to a still-warm object finds the scheduler already
+   * built, so a greeting tied to construction is sent once and never again — and a client that never
+   * receives `ready` has no layout, no piece range, and nothing to do but wait.
+   */
+  #greeted = false;
+  /** Whether this connection has already been told the session is finished. */
+  #eofAnnounced = false;
 
   constructor(ctx: DurableObjectState, env: Bindings) {
     super(ctx, env);
@@ -184,6 +194,20 @@ export class Session extends DurableObject<Bindings> {
       return new Response("expected a websocket upgrade", { status: 426 });
     }
 
+    // One viewer per session, so a reconnect **takes over** rather than joining.
+    //
+    // `getWebSockets()` is ordered oldest-first and a closed page's socket can outlive it for a
+    // while, so without this a reload lands behind a corpse: every frame — including `ready` — goes
+    // to the dead socket and the live client sits at whatever it had already stored, looking for all
+    // the world like a swarm with no peers.
+    for (const stale of this.ctx.getWebSockets()) {
+      try {
+        stale.close(1012, "replaced by a newer connection");
+      } catch {
+        // Already gone, which is the outcome being aimed at.
+      }
+    }
+
     const pair = new WebSocketPair();
     const server = pair[1];
 
@@ -193,6 +217,8 @@ export class Session extends DurableObject<Bindings> {
     // Keepalives answered by the runtime cost no wall-clock and do not wake a hibernated object.
     this.ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
 
+    this.#greeted = false;
+    this.#eofAnnounced = false;
     const attachment: SessionAttachment = { v: 1, infoHash, fileIndex };
     server.serializeAttachment(attachment);
     this.#infoHash = infoHash;
@@ -271,6 +297,8 @@ export class Session extends DurableObject<Bindings> {
     const scheduler = this.#scheduler;
     if (scheduler === null) return;
     scheduler.nak(pieces);
+    // No longer finished, so a later completion is worth announcing again.
+    this.#eofAnnounced = false;
     for (const piece of pieces) {
       this.#store.drop(piece);
       // The client hashed it and it failed, which is far stronger evidence than a failed dial: the
@@ -371,6 +399,11 @@ export class Session extends DurableObject<Bindings> {
     const scheduler = this.#scheduler!;
     const layout = this.#layout!;
 
+    if (!this.#greeted) {
+      this.#greeted = true;
+      this.#send(this.#ready());
+    }
+
     const deadline = Date.now() + this.#config.tickBudgetMs;
     let budget = this.#config.maxBytesPerTick;
 
@@ -379,7 +412,18 @@ export class Session extends DurableObject<Bindings> {
     this.#dropSilentPeers();
     this.#dial();
 
-    if (scheduler.done) return;
+    if (scheduler.done) {
+      // Announce once per connection, because a client reconnecting to a finished session is
+      // otherwise told nothing at all. Its own record of what it holds is the authority — "sent"
+      // here only means "handed to a socket" — so if it is missing pieces it will NAK them and this
+      // stops being done. Once per connection rather than once per tick: the watchdog keeps ticking
+      // while the client is attached, and a repeated eof is just noise in its log.
+      if (!this.#eofAnnounced) {
+        this.#eofAnnounced = true;
+        this.#send({ t: "eof", sent: this.#piecesOut });
+      }
+      return;
+    }
 
     if (this.#peers.size === 0) {
       // Wait inside this invocation rather than returning and re-arming. A cold start against a
@@ -437,8 +481,7 @@ export class Session extends DurableObject<Bindings> {
   /** Hand a finished piece to the client, unverified. The client hashes it. */
   #deliver(pieceIndex: number, bytes: Uint8Array): void {
     const scheduler = this.#scheduler!;
-    const sockets = this.ctx.getWebSockets();
-    const ws = sockets[0];
+    const ws = this.#client();
     if (ws === undefined) return;
     try {
       ws.send(encodePiece(scheduler.epoch, pieceIndex, bytes));
@@ -777,7 +820,7 @@ export class Session extends DurableObject<Bindings> {
   /** Rebuild identity after a hibernation, from the socket that woke us. */
   #restoreIdentity(): void {
     if (this.#infoHash !== null) return;
-    const ws = this.ctx.getWebSockets()[0];
+    const ws = this.#client();
     if (ws === undefined) return;
     const attachment = ws.deserializeAttachment() as SessionAttachment | null;
     if (attachment === null || attachment.v !== 1) return;
@@ -836,8 +879,6 @@ export class Session extends DurableObject<Bindings> {
     this.#scheduler = snapshot === undefined
       ? new Scheduler(init)
       : Scheduler.restore(init, snapshot);
-
-    this.#send(this.#ready());
     return true;
   }
 
@@ -1047,8 +1088,17 @@ export class Session extends DurableObject<Bindings> {
     };
   }
 
+  /**
+   * The live client socket: the newest one.
+   *
+   * Never index 0 — that is the oldest, and after a reconnect it is the one that just got replaced.
+   */
+  #client(): WebSocket | undefined {
+    return this.ctx.getWebSockets().at(-1);
+  }
+
   #send(control: ServerControl): void {
-    const ws = this.ctx.getWebSockets()[0];
+    const ws = this.#client();
     if (ws === undefined) return;
     try {
       ws.send(encodeControl(control));
