@@ -22,7 +22,11 @@ function makeStore(options: {
   const pieceLength = options.pieceLength ?? 16;
   const have = options.have ?? new Set<number>();
   const asked: number[] = [];
+  // A clock the test drives, so "has this reader been stuck long enough to be worth a seek?" can be
+  // asserted without waiting in real time.
+  const clock = { now: 1_000_000 };
   const store = new ByteStore({
+    now: () => clock.now,
     chunks: { pieceLength, totalLength: 4096 },
     file: { offset: options.offset ?? 5, length: options.length ?? 100 },
     readAt: (offset: number, length: number) => {
@@ -34,7 +38,7 @@ function makeStore(options: {
     requestPieces: (piece: number) => asked.push(piece),
     cursor: () => options.cursor ?? 0,
   });
-  return { store, have, asked };
+  return { store, have, asked, clock };
 }
 
 describe("piece arithmetic", () => {
@@ -102,25 +106,62 @@ describe("waiting for pieces that have not arrived", () => {
   });
 
   it("leaves the relay alone when it is already heading for the missing piece", async () => {
-    const { store, asked } = makeStore({ have: new Set(), cursor: 0 });
+    const { store, asked, clock, have } = makeStore({ have: new Set(), cursor: 0 });
     void store.read(0, 32).catch(() => {});
-    await Promise.resolve();
+    clock.now += 60_000;
+    have.add(99);
+    store.pieceArrived();
     // Piece 0 is within the lookahead of a cursor at 0; moving it would only restart what it does.
     expect(asked).toEqual([]);
   });
 
-  it("moves the relay when what is wanted is far behind its cursor", async () => {
-    const { store, asked } = makeStore({ have: new Set(), cursor: 500 });
+  /**
+   * The one that matters. While playback runs, the demuxer reads ahead constantly and some of those
+   * reads land beyond the lookahead — but the sequential download reaches them in a second or two.
+   * Acting immediately restarts the relay's cursor over and over; measured against the live swarm
+   * that was seven cursor resets in a hundred seconds and throughput down from 2.4 to 0.06 MiB/s.
+   */
+  it("does not move the relay for a read that has only just blocked", async () => {
+    const { store, asked, clock, have } = makeStore({ have: new Set(), cursor: 500 });
     void store.read(0, 32).catch(() => {});
-    await Promise.resolve();
+    clock.now += 500;
+    have.add(99);
+    store.pieceArrived();
+    expect(asked).toEqual([]);
+  });
+
+  it("moves the relay for a read that stays blocked", async () => {
+    const { store, asked, clock, have } = makeStore({ have: new Set(), cursor: 500 });
+    void store.read(0, 32).catch(() => {});
+    clock.now += 5_000;
+    have.add(99);
+    store.pieceArrived();
     expect(asked).toEqual([0]);
   });
 
   it("asks only once for the same piece, however many reads block on it", async () => {
-    const { store, asked } = makeStore({ have: new Set(), cursor: 500 });
+    const { store, asked, clock, have } = makeStore({ have: new Set(), cursor: 500 });
     void store.read(0, 32).catch(() => {});
     void store.read(0, 48).catch(() => {});
-    await Promise.resolve();
+    clock.now += 5_000;
+    have.add(99);
+    store.pieceArrived();
+    expect(asked).toEqual([0]);
+  });
+
+  it("holds a minimum gap between demands, so several stuck readers cannot thrash the cursor", async () => {
+    const { store, asked, clock, have } = makeStore({ have: new Set(), cursor: 500 });
+    void store.read(0, 32).catch(() => {});
+    clock.now += 5_000;
+    have.add(99);
+    store.pieceArrived();
+    expect(asked).toEqual([0]);
+
+    // A different reader, stuck on a different piece, immediately afterwards.
+    void store.read(90, 100).catch(() => {});
+    clock.now += 3_000;
+    have.add(98);
+    store.pieceArrived();
     expect(asked).toEqual([0]);
   });
 

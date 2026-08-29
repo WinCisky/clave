@@ -150,17 +150,24 @@ isolation). Dialling a live swarm cannot be hermetic, so that part is the integr
 
 ## The browser client
 
-`web/` is a static three-step page — no framework, no build step — that does the client half of the
+`web/` is a static two-page client — no framework, no build step — that does the client half of the
 contract for real: paste a magnet, pick a video if the torrent holds more than one, and it plays.
 
-There are no controls. Recovery starts the moment there is a file to recover — as soon as the magnet
-resolves when there is only one video, or as soon as one is picked when there are several — and the
-player opens itself behind it. A Start button only ever delayed the download by however long it took
-someone to notice it, and everything else it sat beside (pause, seek-by-piece, save, clear) was a
-control for a download rather than for watching something.
+**Page one is the magnet**, and nothing else: the field, Resolve, and Clear storage. **Page two is
+the file and the video**, with a Back that returns to the first. Recovery starts the moment there is
+a file to recover — as soon as the magnet resolves when there is only one video, or as soon as one is
+picked when there are several — and the player opens itself behind it. There is no Start button,
+because it only ever delayed the download by however long it took someone to notice it.
 
-Recovering and watching are one panel, because they are one activity: the video leads, and the
-progress grid sits underneath it as the evidence for what the player is doing.
+Recovering and watching are one panel, because they are one activity: the video leads, the progress
+grid sits underneath it as the evidence for what the player is doing, and Save file waits at the
+bottom until the last piece is verified — half a film saved is a file that will not open.
+
+`Back` terminates the stream worker rather than just hiding the page, and that is load-bearing: the
+worker holds an *exclusive* handle on the stored file, so `Clear storage` on page one would
+otherwise find it busy. Clearing also invalidates the relay's session name, because a client that
+has thrown its pieces away and a Durable Object that still remembers sending them disagree in a way
+that costs a whole download (see below).
 
 ```bash
 node scripts/devserver.mjs          # then open http://localhost:8080/?bstream=/bstream
@@ -443,6 +450,21 @@ plausible segment counts and plausible byte totals, and only a real decoder disa
 - **A seek started the audio where the viewer asked, not where the video actually began.** A seek
   lands on the key packet *before* the target, so asking audio for the requested time left the sound
   two seconds ahead of the picture for the rest of the film.
+- **The byte gate fought the download it depends on.** Playback reads ahead constantly, and some of
+  those reads land beyond the piece the relay is currently at — so the gate dutifully moved the
+  relay's cursor to them. But the sequential download would have reached them within a second or two
+  anyway, and each move restarts the relay somewhere else: measured against the live swarm, **seven
+  cursor resets in a hundred seconds and throughput down from 2.4 MiB/s to 0.06**, with the download
+  never finishing. The fix is a delay, not a cleverer target — a reader still blocked after two and a
+  half seconds is genuinely stuck, which is what a real seek looks like, while a read-ahead resolves
+  on its own long before that. Afterwards: **zero cursor resets, and the same file in under thirty
+  seconds at 5.5 MiB/s.**
+- **Clearing local storage without telling the relay costs the whole download.** The relay remembers
+  per session which pieces it has sent, so the next connection was greeted with an immediate `eof`
+  for a file the client no longer had a byte of. The client recovers — it NAKs the shortfall — but
+  the refill arrives in NAK order rather than head-and-tail first, so the player waits for the end of
+  the file and playback cannot begin until the download is finished. Clearing now starts a fresh
+  relay session, and playback begins at **48 of 987 pieces**, five percent in.
 - **A zero-length packet is not a drain signal, but `avcodec_send_packet` thinks it is.** Theora
   encodes a repeated frame as an empty packet, and plenty of real files are full of them: the
   archive.org Big Buck Bunny `.ogv` decoded **exactly one video frame** and then returned
@@ -481,9 +503,6 @@ plausible segment counts and plausible byte totals, and only a real decoder disa
   bstream but not cached locally, so a cold start re-derives them. This is the obvious next
   cold-start win.
 - **BitTorrent v2 / hybrid torrents** are not handled; v1 SHA-1 pieces only.
-- **Nothing exports or clears the stored file.** Removing the controls took `Save file` and
-  `Clear storage` with them, so a watched film stays in OPFS with no route out except the browser's
-  own site-data settings. The worker code that did both was removed rather than left unreachable.
 - **Styled subtitles (ASS/SSA) are listed but not rendered**, and neither are bitmap ones (PGS,
   VobSub). Text tracks are also read only from Matroska, which is where they actually live in
   practice; MP4's `tx3g` is not.

@@ -16,6 +16,22 @@
 /** Pieces the relay may still deliver on its own before we bother moving its cursor. */
 const LOOKAHEAD_PIECES = 64;
 
+/**
+ * How long a reader must be stuck before its demand is worth moving the relay for.
+ *
+ * This is the difference between reprioritising and thrashing. While playback runs normally the
+ * demuxer reads ahead constantly, and some of those reads land beyond the lookahead — but the
+ * sequential download sweeps past them within a second or two, so they resolve on their own. Acting
+ * on them instead restarts the relay's cursor over and over: measured at seven epoch bumps in a
+ * hundred seconds, with throughput collapsing from 2.4 MiB/s to 0.06 as the download kept being
+ * sent back to the beginning of somewhere else. A reader that is still waiting after this long is
+ * genuinely stuck, which is what a real seek looks like.
+ */
+const DEMAND_AFTER_MS = 2500;
+
+/** And never more often than this, however many readers are unhappy. */
+const DEMAND_GAP_MS = 5000;
+
 export class ByteStore {
   #chunks;
   #file;
@@ -28,6 +44,9 @@ export class ByteStore {
   #waiters = [];
   #seq = 0;
   #lastRequested = -1;
+  #lastDemandAt = 0;
+  #timer = null;
+  #now;
   #exhausted = null;
 
   /**
@@ -39,7 +58,8 @@ export class ByteStore {
    * @param {(piece: number) => void} options.requestPieces                  move the relay's cursor
    * @param {() => number} options.cursor                                    where the relay is now
    */
-  constructor({ chunks, file, readAt, hasPiece, requestPieces, cursor }) {
+  constructor({ chunks, file, readAt, hasPiece, requestPieces, cursor, now = Date.now }) {
+    this.#now = now;
     this.#chunks = chunks;
     this.#file = file;
     this.#readAt = readAt;
@@ -100,9 +120,24 @@ export class ByteStore {
   #wait(start, end) {
     if (this.#exhausted !== null) return Promise.reject(this.#exhausted);
     return new Promise((resolve, reject) => {
-      this.#waiters.push({ start, end, resolve, reject, seq: this.#seq++ });
-      this.#steer();
+      this.#waiters.push({ start, end, resolve, reject, seq: this.#seq++, since: this.#now() });
+      this.#schedule();
     });
+  }
+
+  /**
+   * Look again once the oldest waiter has been stuck long enough to be worth acting on.
+   *
+   * Needed because `pieceArrived` is the only other thing that calls `#steer`, and a reader waiting
+   * on a relay that has stopped sending entirely would never be looked at again.
+   */
+  #schedule() {
+    if (this.#timer !== null || this.#waiters.length === 0) return;
+    this.#timer = setTimeout(() => {
+      this.#timer = null;
+      this.#steer();
+      this.#schedule();
+    }, DEMAND_AFTER_MS);
   }
 
   /** Called for every piece that passes its hash. Resolves whoever was waiting on it. */
@@ -124,6 +159,8 @@ export class ByteStore {
    * explanation, where an error at least reaches the page as one.
    */
   exhaust(reason) {
+    if (this.#timer !== null) clearTimeout(this.#timer);
+    this.#timer = null;
     this.#exhausted = new Error(reason);
     for (const waiter of this.#waiters) waiter.reject(this.#exhausted);
     this.#waiters = [];
@@ -133,6 +170,12 @@ export class ByteStore {
   #steer() {
     const oldest = this.#waiters[0];
     if (oldest === undefined) return;
+
+    // Give the sequential download a chance to arrive at it before pulling the cursor over.
+    const now = this.#now();
+    if (now - oldest.since < DEMAND_AFTER_MS) return;
+    if (now - this.#lastDemandAt < DEMAND_GAP_MS) return;
+
     const piece = this.firstMissing(oldest.start, oldest.end);
     if (piece === -1) return;
 
@@ -142,6 +185,7 @@ export class ByteStore {
     if (piece === this.#lastRequested) return;
 
     this.#lastRequested = piece;
+    this.#lastDemandAt = now;
     this.#requestPieces(piece);
   }
 

@@ -34,10 +34,13 @@ const EXAMPLES = [
 
 const $ = (id) => document.getElementById(id);
 const el = {
+  pages: { magnet: $("page-magnet"), watch: $("page-watch") },
   steps: { magnet: $("step-magnet"), file: $("step-file"), recover: $("step-recover") },
+  back: $("back"),
+  save: $("save"),
+  clear: $("clear"),
   magnet: $("magnet"),
   resolve: $("resolve"),
-  reset: $("reset"),
   examples: $("examples"),
   magnetMessage: $("magnet-message"),
   magnetNote: $("magnet-note"),
@@ -83,6 +86,16 @@ const session = {
   running: false,
   watching: false,
   encode: null,
+  /**
+   * Set when local storage is cleared, and mixed into the relay's session name.
+   *
+   * The relay remembers, per session, which pieces it has already sent. Wiping this side without
+   * telling it means the next connection is greeted with an immediate `eof` for a file we no longer
+   * have a byte of — recoverable, since the client NAKs the shortfall, but the refill arrives in NAK
+   * order rather than head-and-tail first, so the player sits waiting for the end of the file and
+   * playback cannot start until the download finishes.
+   */
+  nonce: null,
   duration: null,
   textTrack: null,
   lastPlayhead: -1,
@@ -104,7 +117,6 @@ for (const example of EXAMPLES) {
 if (CONFIG.magnet.length > 0) el.magnet.value = CONFIG.magnet;
 
 el.resolve.onclick = () => void resolve();
-el.reset.onclick = () => location.reload();
 el.magnet.onkeydown = (event) => {
   if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) void resolve();
 };
@@ -167,11 +179,99 @@ function adopt(infoHash, body) {
   message(el.magnetMessage, peers === 0 ? "warn" : null, peers === 0
     ? "Resolved, but the relay knows of no peers right now. The download may not start."
     : null);
-  el.steps.magnet.classList.replace("active", "done");
-  el.reset.hidden = false;
-
+  show("watch");
   chooseFile();
 }
+
+/** Which of the two pages is showing. */
+function show(page) {
+  el.pages.magnet.hidden = page !== "magnet";
+  el.pages.watch.hidden = page !== "watch";
+  window.scrollTo({ top: 0 });
+}
+
+/**
+ * Back to the magnet, and put everything down on the way.
+ *
+ * A reload would be simpler and would also throw away whatever the viewer typed. This tears the
+ * session down instead: the worker is terminated, which is what releases the exclusive lock on the
+ * stored file — without that, `Clear storage` on the first page would find the file busy and fail.
+ */
+function goBack() {
+  session.worker?.postMessage({ type: "stop" });
+  session.worker?.terminate();
+  session.worker = null;
+  session.running = false;
+  session.watching = false;
+  session.chosen = null;
+  session.encode = null;
+  session.duration = null;
+  session.lastPlayhead = -1;
+
+  el.video.pause();
+  el.video.srcObject = null;
+  el.video.removeAttribute("src");
+  if (session.textTrack !== null) {
+    for (const cue of [...(session.textTrack.cues ?? [])]) session.textTrack.removeCue(cue);
+    session.textTrack.mode = "disabled";
+  }
+
+  el.grid.replaceChildren();
+  el.log.replaceChildren();
+  el.bar.value = 0;
+  el.save.disabled = true;
+  el.strip.style.removeProperty("--runs");
+  el.tracks.hidden = true;
+  el.audioLabel.hidden = true;
+  el.subLabel.hidden = true;
+  for (const node of [el.recoverMessage, el.watchMessage, el.fileMessage]) message(node, null);
+  for (const node of Object.values(el.watchStat)) node.textContent = "—";
+  for (const node of Object.values(el.stat)) node.textContent = "—";
+  el.steps.file.hidden = true;
+  el.steps.recover.hidden = true;
+  el.steps.recover.classList.remove("active", "done");
+
+  show("magnet");
+}
+
+el.back.onclick = goBack;
+
+el.save.onclick = () => {
+  if (session.worker === null) return;
+  el.save.disabled = true;
+  session.worker.postMessage({ type: "save" });
+};
+
+/**
+ * Throw away everything this page has stored, for every torrent.
+ *
+ * On the first page there is no session to scope it to, which is the right scope anyway: the point
+ * of the button is to get the disk space back. It needs no worker — reading the directory and
+ * removing entries is main-thread work — but it does need no session to be holding a file open,
+ * which is why `Back` terminates the worker.
+ */
+async function clearStorage() {
+  el.clear.disabled = true;
+  try {
+    const before = (await navigator.storage.estimate?.())?.usage ?? 0;
+    const root = await navigator.storage.getDirectory();
+    const names = [];
+    for await (const name of root.keys()) names.push(name);
+    for (const name of names) await root.removeEntry(name, { recursive: true });
+    // A cleared client and a relay that still thinks it has sent everything disagree; start fresh.
+    session.nonce = Date.now();
+    const after = (await navigator.storage.estimate?.())?.usage ?? 0;
+    message(el.magnetMessage, "info", names.length === 0
+      ? "Nothing was stored."
+      : `Cleared ${names.length} torrent${names.length === 1 ? "" : "s"}, freeing ${formatBytes(Math.max(0, before - after))}.`);
+  } catch (err) {
+    message(el.magnetMessage, "error", `Could not clear storage: ${describe(err)}`);
+  } finally {
+    el.clear.disabled = false;
+  }
+}
+
+el.clear.onclick = () => void clearStorage();
 
 // -------------------------------------------------------------------------------------------------
 // Step 2 — which file
@@ -341,8 +441,8 @@ function start() {
     type: "start",
     workerUrl: CONFIG.worker,
     // Deterministic, so a reload resumes the relay's own scheduler state as well as ours.
-    session: CONFIG.fresh
-      ? `${session.infoHash}-${session.chosen.index}-${Date.now()}`
+    session: CONFIG.fresh || session.nonce !== null
+      ? `${session.infoHash}-${session.chosen.index}-${session.nonce ?? Date.now()}`
       : `${session.infoHash}-${session.chosen.index}`,
     infoHash: session.infoHash,
     chunks: session.chunks,
@@ -374,6 +474,9 @@ function onWorkerMessage(message_) {
     case "storage":
       log(`storage: ${message_.backend}${message_.resumedPieces > 0 ? `, resumed ${message_.resumedPieces} pieces` : ""}`);
       watch();
+      break;
+    case "file":
+      receiveFile(message_.name, message_.blob);
       break;
     case "player_ready":
       onPlayerReady(message_.plan, message_.handle);
@@ -458,6 +561,8 @@ function paint(pieceIndex, className) {
 
 function renderProgress(p) {
   el.bar.value = p.verified;
+  // Half a film saved is a file that will not open, so this waits for the last piece.
+  el.save.disabled = p.verified < p.total;
   el.stat.pieces.textContent = `${p.verified} / ${p.total}`;
   el.stat.bytes.textContent = formatBytes(p.bytes);
   el.stat.rate.textContent = `${(p.bytesPerSecond / 1048576).toFixed(2)} MiB/s`;
@@ -476,6 +581,8 @@ function renderProgress(p) {
  * separating the two is what makes a playback failure attributable to the player.
  */
 function startLocal(url) {
+  show("watch");
+  el.back.hidden = true;
   el.magnetNote.textContent = "local file mode";
   // There is no torrent and no grid, so the panel has to be revealed here — normally `prepareGrid`
   // does it once a file has been picked.
@@ -507,6 +614,17 @@ const ROUTE_LABEL = {
   "transcode-audio": "audio re-encoded",
   legacy: "full transcode",
 };
+
+function receiveFile(name, blob) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = name;
+  anchor.click();
+  // Revoked late: the download reads from the object URL after the click returns.
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  el.save.disabled = false;
+}
 
 function onPlayerReady(plan, handle) {
   session.duration = plan.duration ?? null;

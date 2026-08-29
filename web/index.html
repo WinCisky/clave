@@ -18,7 +18,12 @@
     </p>
   </header>
 
-  <!-- Step 1 ---------------------------------------------------------------------------------- -->
+  <!-- Page 1: the magnet ------------------------------------------------------------------------
+    Two pages rather than a column of steps. Resolving a magnet and watching what came back are
+    separate concerns and separate moments; stacking them meant the player opened below a form that
+    had nothing left to say.
+  -->
+  <div id="page-magnet">
   <section class="step active" id="step-magnet">
     <header>
       <span class="badge">1</span>
@@ -30,7 +35,7 @@
       <textarea id="magnet" spellcheck="false" placeholder="magnet:?xt=urn:btih:…"></textarea>
       <div class="row">
         <button class="primary" id="resolve">Resolve</button>
-        <button id="reset" class="danger" hidden>Start over</button>
+        <button id="clear" class="danger">Clear storage</button>
       </div>
       <p class="hint">
         A magnet the relay has not seen before is resolved first, which walks the swarm for its
@@ -40,6 +45,10 @@
       <div class="message" id="magnet-message" hidden></div>
     </div>
   </section>
+  </div>
+
+  <!-- Page 2: the file, and the video ------------------------------------------------------- -->
+  <div id="page-watch" hidden>
 
   <!-- Step 2 ---------------------------------------------------------------------------------- -->
   <section class="step" id="step-file" hidden>
@@ -117,8 +126,15 @@
 
       <div class="message" id="recover-message" hidden></div>
       <div class="log" id="log"></div>
+
+      <div class="row">
+        <button id="back">Back</button>
+        <!-- Only once every piece is verified: half a film saved is a file that will not open. -->
+        <button id="save" disabled>Save file</button>
+      </div>
     </div>
   </section>
+  </div>
 </main>
 
 <script type="module" src="./app.js"></script>

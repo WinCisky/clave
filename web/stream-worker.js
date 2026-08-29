@@ -74,6 +74,9 @@ self.onmessage = (event) => {
     case "start_local":
       void startLocal(message).catch((err) => fail("local_failed", describe(err)));
       break;
+    case "save":
+      void save().catch((err) => fail("save_failed", describe(err)));
+      break;
     case "watch":
       void openPlayer().catch((err) => fail("player_failed", describe(err)));
       break;
@@ -301,6 +304,23 @@ async function openPlayer() {
     post: (message, transfer) => self.postMessage(message, transfer ?? []),
   });
   await state.player.open();
+}
+
+/**
+ * Hand the page the finished file.
+ *
+ * This lives here rather than on the page because the sync access handle is exclusive and stays
+ * open for as long as the player might read from it, so `getFileHandle().getFile()` on the main
+ * thread would be locked out.
+ */
+async function save() {
+  const size = state.fileEntry.length;
+  const parts = [];
+  const CHUNK = 8 * 1024 * 1024;
+  for (let at = 0; at < size; at += CHUNK) {
+    parts.push(readAt(at, Math.min(CHUNK, size - at)).slice());
+  }
+  post({ type: "file", name: state.fileEntry.name, blob: new Blob(parts) });
 }
 
 /** Read file-relative bytes back out of wherever the pieces were put. */
