@@ -1,0 +1,89 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "clave",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-22",
+
+  // Nothing here needs Node built-ins. The peer wire runs on `cloudflare:sockets` directly and
+  // every byte helper is standard Web API, so `nodejs_compat` would only add surface area.
+  "compatibility_flags": [],
+
+  "observability": { "enabled": true },
+
+  // One Durable Object per client session. It owns the client WebSocket and the peer sockets;
+  // nothing is shared between sessions, because `seek` and credits are per-client.
+  "durable_objects": {
+    "bindings": [{ "name": "SESSION", "class_name": "Session" }]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      // SQLite-backed, the only Durable Object storage backend on the Workers Free plan.
+      "new_sqlite_classes": ["Session"]
+    }
+  ],
+
+  "vars": {
+    // Origins allowed to open a stream from a browser. "*" for local work.
+    "CF_CORS_ORIGIN": "*",
+
+    // bstream: the only `fetch()` in the design. It resolves magnets over UDP trackers and the
+    // DHT, which a Worker cannot do, and hands back the layout plus a ranked peer list.
+    "RECORDS_URL": "https://bstream.ssimo.dev",
+
+    // --- cost levers -------------------------------------------------------------------------
+    // Durable Object *duration* is the binding free-tier constraint (13,000 GB-s/day), and it is
+    // proportional to how long the download takes, not to how long the film runs. So these are
+    // sized to finish fast and close, not to pace playback.
+
+    // Established peer sessions worth holding.
+    "MAX_PEERS": "12",
+    // Outstanding 16 KiB block requests per peer. Measured: 16 works; libtorrent queues far more.
+    "PIPELINE_DEPTH": "16",
+    // Bytes parsed and forwarded in one alarm tick. Each tick is one Durable Object request with
+    // its own 30 s CPU budget, so bigger ticks are straightforwardly fewer billed requests.
+    "MAX_BYTES_PER_TICK": "16777216",
+    // Wall-clock ceiling on one tick, so an alarm always returns and re-arms.
+    "TICK_BUDGET_MS": "5000",
+    // Floor on how often an alarm may be armed. Every setAlarm is BOTH a billed request and a
+    // SQLite row write, and the free plan allows 100,000 of each per day — so a 250 ms pump would
+    // spend the entire daily budget on one film. This makes that structurally unreachable.
+    "MIN_ALARM_GAP_MS": "1000",
+    // Slow heartbeat: reaps dial slots, re-dials, resumes a pump whose invocation was killed, and
+    // enforces the hold and idle transitions. Rare enough to be free, frequent enough to recover.
+    "WATCHDOG_MS": "10000",
+    // A tick is presumed dead if it has not finished this long past its budget. A killed
+    // invocation never runs its `finally`, so a boolean "busy" flag would wedge forever.
+    "PUMP_STALE_GRACE_MS": "5000",
+    // Credit exhausted and nothing to do: wait this long, then close every peer socket. An open
+    // outbound TCP socket is precisely what makes a Durable Object ineligible to hibernate, so
+    // dropping them is what stops duration accruing. This is the single biggest cost lever.
+    "HOLD_MS": "20000",
+    // Ceiling on dials started in one invocation, in case `connect()` turns out to count against
+    // the 50-external-subrequest cap. Unverified; cheap insurance either way.
+    "MAX_DIALS_PER_TICK": "40",
+    // Bytes of piece buffers held at once, against a 128 MB isolate.
+    "ASSEMBLY_BUDGET_BYTES": "33554432",
+    // Bytes at the head of the file fetched before anything else: `ftyp` + a faststart `moov`,
+    // or Matroska's EBML header, Segment Info and SeekHead.
+    "HEAD_BYTES": "2097152",
+    // Tail window, as a divisor of file length: an MP4 `moov` runs 0.1-1% of the file, so a fixed
+    // window silently misses it on a large non-faststart file. Clamped by the two below.
+    "TAIL_DIVISOR": "100",
+    "TAIL_MIN_BYTES": "1048576",
+    "TAIL_MAX_BYTES": "16777216",
+    // Pieces the client may be behind before the scheduler stops requesting more. The client
+    // grants credit in batches; inbound WebSocket messages bill 20:1, so this can be generous.
+    "CREDIT_WINDOW": "64",
+    // No credit and no client traffic for this long: drop the peers and let the object go idle.
+    "IDLE_MS": "120000",
+    // Bad pieces blamed on one peer before it is dropped and banned for the session.
+    "NAK_BAN_THRESHOLD": "3",
+    // Dial deadlines. Connect is answered in a couple of round trips or not at all; a peer that
+    // has already answered TCP can afford longer for its handshake.
+    "CONNECT_TIMEOUT_MS": "1200",
+    "HANDSHAKE_TIMEOUT_MS": "3500",
+    // Ask bstream for a fresh swarm no more often than this.
+    "REFRESH_COOLDOWN_MS": "60000"
+  }
+}
