@@ -18,7 +18,7 @@
 
 import { createServer } from "node:http";
 import { extname, join, normalize, resolve } from "node:path";
-import { readFile, stat } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 
 const args = process.argv.slice(2);
 const opt = (name, fallback) => {
@@ -29,6 +29,8 @@ const opt = (name, fallback) => {
 const port = Number(opt("port", "8080"));
 const upstream = opt("bstream", "https://bstream.ssimo.dev").replace(/\/+$/, "");
 const root = resolve(import.meta.dirname, "..", "web");
+/** Test media, served so `?local=` can point the player at one file per route. */
+const fixtures = resolve(import.meta.dirname, "..", "fixtures", "media");
 
 const TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -39,6 +41,15 @@ const TYPES = {
   ".svg": "image/svg+xml",
   ".ico": "image/x-icon",
   ".png": "image/png",
+  ".wasm": "application/wasm",
+  ".mp4": "video/mp4",
+  ".mkv": "video/x-matroska",
+  ".webm": "video/webm",
+  ".avi": "video/x-msvideo",
+  ".ogv": "video/ogg",
+  ".mpg": "video/mpeg",
+  ".wmv": "video/x-ms-asf",
+  ".mov": "video/quicktime",
 };
 
 const server = createServer(async (request, response) => {
@@ -46,6 +57,16 @@ const server = createServer(async (request, response) => {
 
   if (url.pathname === "/bstream" || url.pathname.startsWith("/bstream/")) {
     await proxy(request, response, url);
+    return;
+  }
+  // The self-test posts its muxer output back so it can be checked with a real decoder. Writing
+  // files is obviously not something a production server would do; this one is a test fixture.
+  if (request.method === "PUT" && url.pathname.startsWith("/capture/")) {
+    await capture(request, response, url);
+    return;
+  }
+  if (url.pathname.startsWith("/fixtures/")) {
+    await serveStatic(response, url.pathname.slice("/fixtures".length), fixtures);
     return;
   }
   await serveStatic(response, url.pathname);
@@ -100,11 +121,24 @@ function readBody(request) {
   });
 }
 
-async function serveStatic(response, pathname) {
+const captureDir = resolve(import.meta.dirname, "..", "fixtures", "capture");
+
+async function capture(request, response, url) {
+  const name = url.pathname.slice("/capture/".length).replace(/[^\w.-]/g, "_");
+  const chunks = [];
+  for await (const chunk of request) chunks.push(chunk);
+  await mkdir(captureDir, { recursive: true });
+  const body = Buffer.concat(chunks);
+  await writeFile(join(captureDir, name), body);
+  console.log(`  captured ${name} (${body.length} bytes)`);
+  response.writeHead(200, cors()).end("ok\n");
+}
+
+async function serveStatic(response, pathname, base = root) {
   // `normalize` collapses `..`, and the prefix check refuses anything that escaped the root.
   const requested = pathname === "/" ? "/index.html" : pathname;
-  const path = join(root, normalize(requested));
-  if (!path.startsWith(root)) {
+  const path = join(base, normalize(requested));
+  if (!path.startsWith(base)) {
     response.writeHead(403).end("forbidden");
     return;
   }

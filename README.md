@@ -126,7 +126,7 @@ than infer it from the frame.
 
 ```bash
 npm install
-npm run verify          # typecheck + 198 tests, inside workerd
+npm run verify          # typecheck + 242 tests, inside workerd
 npx wrangler dev
 
 # the whole file, hash-checked, written to disk
@@ -150,10 +150,10 @@ isolation). Dialling a live swarm cannot be hermetic, so that part is the integr
 
 ## The browser client
 
-`web/` is a static three-step page — no framework, no build step — that does the client half of the
+`web/` is a static four-step page — no framework, no build step — that does the client half of the
 contract for real: it resolves a magnet, offers a choice when a torrent holds more than one video,
-and recovers the pieces into the browser's own filesystem, showing progress as a
-GitHub-contributions-style grid.
+recovers the pieces into the browser's own filesystem showing progress as a
+GitHub-contributions-style grid, and plays the result while it is still arriving.
 
 ```bash
 node scripts/devserver.mjs          # then open http://localhost:8080/?bstream=/bstream
@@ -161,12 +161,14 @@ node scripts/devserver.mjs          # then open http://localhost:8080/?bstream=/
 
 | file | job |
 | --- | --- |
-| `web/index.html`, `styles.css` | the three steps, the grid, the legend |
+| `web/index.html`, `styles.css` | the four steps, the grid, the player, the legend |
 | `web/app.js` | step machine, file chooser, grid painting, stats. Touches no video bytes |
 | `web/stream-worker.js` | a Web Worker owning the WebSocket, SHA-1 and OPFS writes |
 | `web/wsproto.js` | browser mirror of `src/wsproto.ts` |
 | `web/torrent.js` | magnet parsing, piece arithmetic, video detection |
 | `web/config.js` | endpoints, overridable per-load with `?bstream=` / `?worker=` |
+| `web/player/` | playback: the byte gate, the route decision, the two engines, MSE, subtitles |
+| `web/vendor/` | pinned mediabunny bundles and the custom libav.js build, fetched by `scripts/vendor.mjs` and `scripts/build-libav.sh` |
 
 **The stream lives in a Web Worker** for three reasons, none of them stylistic: OPFS
 `createSyncAccessHandle()` — the positional-write path — exists only in a worker; hashing ~1000
@@ -182,6 +184,83 @@ a bit-packed `<filename>.bitmap` of which pieces are verified. The session name 
 `<infohash>-<fileIndex>`, so a reload resumes *both* halves: the relay restores its scheduler
 snapshot, and the bitmap stops the page re-requesting what it already holds. `?fresh` forces a new
 session, `?corrupt=N` pretends piece N failed its hash, `?credit=N` sets the opening grant.
+
+## Playing it
+
+The file is played out of the same OPFS storage the download writes into, while the download is
+still running. Three things make that harder than pointing a `<video>` at a blob.
+
+**The file is not all there.** Both engines read through one gate (`web/player/store.js`) that maps
+file bytes onto torrent pieces, answers immediately when the covering pieces are verified, and
+otherwise waits. The waiting is where the design is: the relay has a single cursor, so the *oldest*
+blocked reader owns it, and it is only moved when what that reader wants is somewhere the relay is
+not about to reach anyway. Progress is guaranteed because every waiter eventually becomes the
+oldest; thrash is avoided because a piece already on its way is simply waited for. When the relay
+finishes without supplying a piece, blocked reads are rejected rather than left hanging — a spinner
+that never stops is the worst of the available failures.
+
+**The container is usually not MP4-in-a-browser-shape.** A probe runs once, up front, and picks one
+of four answers, then says which and why:
+
+| route | what happens | when |
+| --- | --- | --- |
+| copy | demux, remux to fragmented MP4, append. No decoding at all | H.264/HEVC/VP9/AV1 with AAC/Opus/MP3/FLAC in MP4, MOV, MKV, WebM, TS |
+| transcode audio | video copied untouched; audio decoded in wasm and re-encoded | AC-3, E-AC-3, DTS — no browser ships a decoder for any of them |
+| legacy | libav.js demuxes and decodes; WebCodecs re-encodes in hardware | AVI, WMV/ASF, FLV, MPEG-PS, Ogg; Xvid/DivX, MPEG-2, WMV3/VC-1, Theora, Cinepak |
+| unplayable | says which codec, in which container, and what this browser lacks | HEVC with no hardware decoder, and anything else with no path |
+
+The video bitstream is **copied, never re-encoded**, on the first two routes — verified byte-identical
+to the source. Only the legacy route re-encodes, and only because nothing else can.
+
+**Nothing renders it for you.** `MediaSource` lives in the same worker as the download, so no video
+byte crosses to the main thread; the page gets a `MediaSourceHandle` and assigns it to
+`video.srcObject`. The worker owns the file because it has to: `createSyncAccessHandle()` takes an
+*exclusive* lock, so a second worker could not open the file being written. `Save file` moved into
+the worker for the same reason.
+
+**Playback never changes the bill.** The download still races to finish, because Durable Object
+duration is billed for as long as peers are held; pacing delivery to playback would turn an
+8-12 GB-s film into hundreds. The only coupling is one `seek` when a read needs pieces the relay has
+not reached and will not soon.
+
+### Subtitles
+
+Text tracks only, and only from Matroska — mediabunny reads no subtitle tracks at all, and pulling
+in 3.6 MB of wasm to fetch a few kilobytes of text would be absurd, so `web/player/subtitles.js`
+walks the EBML itself. The walk is forward-only and incremental, so cues appear as their part of the
+film arrives. ASS/SSA tracks are listed and named as skipped rather than silently dropped; they need
+a libass renderer this page does not have.
+
+### The libav build
+
+Upstream deliberately ships no prebuilt variant containing the MPEG decoders, so
+`scripts/build-libav.sh` builds one: demuxers and decoders only, no muxers, no encoders, no CLI,
+because mediabunny muxes and WebCodecs encodes. **3.6 MB of wasm**, loaded only when a file actually
+needs it. It is committed, so nobody else needs emscripten.
+
+### Verified without a swarm
+
+`web/selftest.js` drives probe → engine → muxer against local fixtures with no MediaSource and no
+network, and posts the muxed output back to the dev server so it can be checked with a real decoder.
+Finding a torrent that happens to contain Xvid with an AC-3 track is a coincidence you wait for;
+this is a test.
+
+```bash
+bash scripts/make-fixtures.sh       # one file per route, built with ffmpeg
+node scripts/devserver.mjs          # then open http://localhost:8080/selftest.html
+```
+
+Every fixture: **750 frames — 30 s at 25 fps, exactly — zero decode errors**, durations within
+0.13 s, keyframes every 2 s on the transcode routes. The copy route's video bitstream is
+**bit-identical** to its source. The 440 Hz test tone comes back at **439 Hz** through both the
+straight copy and the full AC-3 → wasm decode → AAC encode path, and the Xvid transcode measures
+**39 dB PSNR** against its source. Seeks land within 0.1 s of each other on video and audio across
+MP4, MKV, AVI and MPEG-PS. HEVC is refused, by name, with the reason.
+
+The same harness has a trickle mode that reveals pieces over time in the relay's own order — head
+window, tail window, then sequential — so a demuxer blocking on absent bytes and resuming is
+reproducible. A 150 s file produced **3750 frames, exact duration, no errors**, muxed faster than it
+arrived.
 
 ### Verified in the browser
 
@@ -230,7 +309,8 @@ things are needed once, and neither is discoverable from an error message:
    `http://localhost:8080` and `http://127.0.0.1:8080` too makes `scripts/devserver.mjs`'s proxy
    unnecessary.
 
-This directory is not a git repository yet, so the workflow has nothing to run in until it is one.
+The Pages origin for this repository is `https://wincisky.github.io`, which is already on
+bstream's allowlist.
 
 ## Configuration
 
@@ -326,6 +406,41 @@ land in it and one of them worked.
   Object alive, so a webseed is cheaper on the binding meter than any peer — no dial, no framing
   CPU, no six-socket cap.
 
+## Things playback got wrong first
+
+Four of these looked like they were working. That is the point of the self-test: each one produced
+plausible segment counts and plausible byte totals, and only a real decoder disagreed.
+
+- **The init segment was `ftyp` alone — 28 bytes.** `moov` is not written when `output.start()`
+  resolves; it appears once the first packets have been muxed. Appending what had accumulated by
+  then silently dropped it, leaving every fragment referring to tracks the SourceBuffer had never
+  heard of. ffprobe: `trun track id unknown, no tfhd was found`. Segments are now emitted strictly
+  in the order the muxer writes them, and `test/player-fmp4.test.ts` pins it.
+- **A time base is a pair, and has to be taken as one.** The AVI decoder reports its frames' time
+  base as `0/1`, so picking numerator and denominator independently — `frame.num || stream.num`,
+  `frame.den || stream.den` — took 1 from the stream and 1 from the frame and yielded raw ticks.
+  Every frame of a 25 fps file landed a whole second apart, which made the encoder emit a keyframe
+  for almost every frame: 751 fragments for thirty seconds, nearly all box header. Two earlier
+  "fixes" (a keyframe interval, then interleaving the feed) changed nothing, because neither was
+  the cause.
+- **FFmpeg's configure accepts an unknown `--enable-decoder` without complaining.** So
+  `demuxer-mpeg` built a variant that could not open a `.mpg` at all — the MPEG program stream
+  demuxer is `mpegps` — and `decoder-flv1` silently omitted FLV. Compounding it, the *configure*
+  name and the *runtime* name differ for two of them: `decoder-msmpeg4v3` is found at runtime as
+  `msmpeg4`. Every entry is now checked against the built artefact with
+  `avcodec_find_decoder_by_name`.
+- **The muxer refuses negative timestamps, and real files have them.** An MP4's AAC track carries
+  encoder delay as a negative first timestamp. The whole run is now shifted so the muxer's timeline
+  starts at zero, and the SourceBuffer's own offset puts it back — measured from the first fragment
+  rather than assumed, because whether a fresh muxer rebases to zero is its business, not ours.
+- **A seek started the audio where the viewer asked, not where the video actually began.** A seek
+  lands on the key packet *before* the target, so asking audio for the requested time left the sound
+  two seconds ahead of the picture for the rest of the film.
+- **The extension bundles import a bare `"mediabunny"` specifier**, which no browser can resolve —
+  and an import map would not help, because these load inside a Web Worker and import maps are
+  scoped to a document. `scripts/vendor.mjs` rewrites it at vendor time. Without this the AC-3, DTS
+  and AAC-encoder extensions all failed to register, and every Dolby track looked undecodable.
+
 ## Not done
 
 - **Webseeds are not used**, even when `peers.webseeds` is non-empty. It is empty for every torrent
@@ -337,6 +452,17 @@ land in it and one of them worked.
   bstream but not cached locally, so a cold start re-derives them. This is the obvious next
   cold-start win.
 - **BitTorrent v2 / hybrid torrents** are not handled; v1 SHA-1 pieces only.
+- **Styled subtitles (ASS/SSA) are listed but not rendered**, and neither are bitmap ones (PGS,
+  VobSub). Text tracks are also read only from Matroska, which is where they actually live in
+  practice; MP4's `tx3g` is not.
+- **HEVC without a hardware decoder cannot be played.** The compatibility build deliberately omits
+  H.264, HEVC, AV1 and VP8/9 — decoding those in WebAssembly would be far slower than realtime, so
+  there is no second opinion to offer and the page says so by name instead.
+- **Playback was not observed end to end in the automation.** The browser window there is
+  permanently occluded, and Chrome defers media-element loading for a hidden document, so
+  `MediaSource` never attaches — not a property of the code, but it means the last few lines
+  (`video.srcObject = handle` through to a moving picture) are verified only by the pieces either
+  side of them: the muxed output decodes correctly in ffmpeg, and the handle reaches the element.
 - Cloudflare's Self-Serve Agreement §2.2.1(j) prohibits "a virtual private network or other similar
   proxy services", and Cloudflare publishes no definition covering a peer relay of this shape.
   Stated as a fact about the terms, not as advice.

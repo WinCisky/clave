@@ -16,6 +16,7 @@
 
 import { client, decodeServerFrame } from "./wsproto.js";
 import { overlapWithFile, pieceLengthAt, safeName } from "./torrent.js";
+import { Player } from "./player/index.js";
 
 /** Per-piece states reported to the page. Must match the grid's CSS classes. */
 /** Piece indices per NAK message. One message can carry many, and inbound messages are billed. */
@@ -58,6 +59,8 @@ const state = {
   startedAt: 0,
   epoch: 0,
   swarm: { peers: 0, dialsInFlight: 0, cursor: 0, sent: 0, bytesOut: 0 },
+  /** Built on demand — the page asks for it when the viewer wants to watch, not before. */
+  player: null,
 };
 
 self.onmessage = (event) => {
@@ -82,6 +85,27 @@ self.onmessage = (event) => {
       break;
     case "stop":
       void teardown("stopped");
+      break;
+    case "start_local":
+      void startLocal(message).catch((err) => fail("local_failed", describe(err)));
+      break;
+    case "watch":
+      void openPlayer().catch((err) => fail("player_failed", describe(err)));
+      break;
+    case "playhead":
+      state.player?.setPlayhead(message.time);
+      break;
+    case "player_seek":
+      void state.player?.seek(message.time);
+      break;
+    case "player_audio":
+      void state.player?.chooseAudio(message.id);
+      break;
+    case "player_subtitles":
+      void state.player?.chooseSubtitles(message.track);
+      break;
+    case "save":
+      void save().catch((err) => fail("save_failed", describe(err)));
       break;
     case "clear":
       void clearStorage(message.infoHash).then(
@@ -113,6 +137,22 @@ async function start(options) {
   // Publish the resumed count straight away. Otherwise the counter reads 0 while the grid already
   // shows hundreds of green cells, until the first new piece happens to arrive.
   progress();
+
+  if (state.verified === state.pieceTotal) {
+    // Everything is already here. Opening a socket would wake a Durable Object, hold peers, and
+    // bill duration for a download that has nothing left to do.
+    state.finished = true;
+    post({
+      type: "eof",
+      verified: state.verified,
+      total: state.pieceTotal,
+      naks: 0,
+      bytes: state.bytesWritten,
+      elapsedMs: 0,
+      offline: true,
+    });
+    return;
+  }
 
   const url = new URL("/stream", options.workerUrl);
   url.protocol = url.protocol === "https:" ? "wss:" : url.protocol === "http:" ? "ws:" : url.protocol;
@@ -232,6 +272,89 @@ async function onPiece({ pieceIndex, bytes }) {
   progress();
 }
 
+/**
+ * Play a plain file over HTTP, with no torrent and no relay.
+ *
+ * A test fixture, not a feature. Every route through the player — remux, audio transcode, the whole
+ * libav path — is otherwise only reachable by finding a torrent that happens to contain the codec
+ * in question, which makes a failure impossible to attribute and a fix impossible to confirm. This
+ * pins one file to one route and takes the swarm out of the picture.
+ */
+async function startLocal(options) {
+  const response = await fetch(options.url);
+  if (!response.ok) throw new Error(`${options.url} returned ${response.status}`);
+  const bytes = new Uint8Array(await response.arrayBuffer());
+
+  // A synthetic single-file torrent covering exactly those bytes, so nothing downstream needs to
+  // know it is not looking at a real one.
+  const pieceLength = 262144;
+  state.memory = bytes;
+  state.chunks = { pieceLength, totalLength: bytes.length, pieces: "", files: [] };
+  state.fileEntry = { index: 0, name: options.name ?? "local", path: options.name ?? "local",
+                      offset: 0, length: bytes.length };
+  state.firstPiece = 0;
+  state.lastPiece = Math.max(0, Math.ceil(bytes.length / pieceLength) - 1);
+  state.pieceTotal = state.lastPiece + 1;
+  state.bits = new Uint8Array(Math.ceil(state.pieceTotal / 8)).fill(0xff);
+  state.verified = state.pieceTotal;
+  state.bytesWritten = bytes.length;
+  state.finished = true;
+  state.startedAt = Date.now();
+
+  post({ type: "storage", backend: "memory", resumedPieces: state.pieceTotal });
+  post({ type: "local_ready", name: state.fileEntry.name, bytes: bytes.length });
+}
+
+/**
+ * Build the player and hand the page a MediaSourceHandle.
+ *
+ * Deliberately lazy: probing costs reads, and the libraries it may pull in are megabytes. A viewer
+ * who only wants the file downloaded never pays for any of it.
+ */
+async function openPlayer() {
+  if (state.player !== null) return;
+  state.player = new Player({
+    chunks: state.chunks,
+    file: state.fileEntry,
+    readAt,
+    hasPiece: getBit,
+    requestPieces: (piece) => {
+      if (state.socket?.readyState === WebSocket.OPEN) state.socket.send(client.seekPiece(piece));
+    },
+    cursor: () => state.swarm.cursor,
+    post: (message, transfer) => self.postMessage(message, transfer ?? []),
+  });
+  await state.player.open();
+}
+
+/** Read file-relative bytes back out of wherever the pieces were put. */
+function readAt(offset, length) {
+  if (state.file !== null) {
+    const out = new Uint8Array(length);
+    const read = state.file.read(out, { at: offset });
+    return read === length ? out : out.subarray(0, read);
+  }
+  if (state.memory !== null) return state.memory.subarray(offset, offset + length);
+  throw new Error("nothing is stored to read from");
+}
+
+/**
+ * Hand the page the finished file.
+ *
+ * This moved out of the page when playback moved in: the sync access handle is exclusive and now
+ * stays open for as long as the player might read from it, so `getFileHandle().getFile()` on the
+ * main thread would be locked out.
+ */
+async function save() {
+  const size = state.fileEntry.length;
+  const parts = [];
+  const CHUNK = 8 * 1024 * 1024;
+  for (let at = 0; at < size; at += CHUNK) {
+    parts.push(readAt(at, Math.min(CHUNK, size - at)).slice());
+  }
+  post({ type: "file", name: state.fileEntry.name, blob: new Blob(parts) });
+}
+
 /** Write only the part of this piece that belongs to the chosen file. */
 async function write(pieceIndex, bytes) {
   const overlap = overlapWithFile(state.chunks, state.fileEntry, pieceIndex, bytes.length);
@@ -289,6 +412,7 @@ async function onEof() {
       type: "anomaly",
       message: `relay finished with ${missing.length} pieces still missing and could not supply them`,
     });
+    state.player?.exhaust(`the relay could not supply ${missing.length} pieces`);
     await finish();
     return;
   }
@@ -312,9 +436,8 @@ async function onEof() {
 async function finish() {
   state.finished = true;
   await flush();
-  // Release the file. A sync access handle is exclusive, so the page cannot read the result — nor
-  // offer it as a download — while this worker still holds one, and there is nothing more to write.
-  closeHandles();
+  // The handles stay open. They used to be released here so the page could read the file back, but
+  // playback and `save` both now read through this worker, and both outlive the download.
   post({
     type: "eof",
     verified: state.verified,
@@ -421,6 +544,8 @@ function setBit(pieceIndex) {
   const at = bitIndex(pieceIndex);
   if (at < 0 || state.bits === null) return;
   state.bits[at >> 3] |= 1 << (at & 7);
+  // Whatever the player is blocked on may have just arrived.
+  state.player?.pieceArrived();
   // Written back in batches by `flush`, and on a cadence, so a crash loses at most a few pieces of
   // *knowledge* — never data, since the bytes are already on disk.
   if (state.verified % 16 === 0) writeBitmap();

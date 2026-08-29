@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>clave — engine self-test</title>
+<style>
+  body { font: 13px ui-monospace, monospace; margin: 24px; background: #0d1117; color: #c9d1d9; }
+  pre { white-space: pre-wrap; }
+  .ok { color: #3fb950; } .bad { color: #f85149; }
+</style>
+</head>
+<body>
+<h1>engine self-test</h1>
+<p>Drives probe → engine → muxer against local fixtures, with no MediaSource. Results are also
+posted to the dev server so the muxed output can be checked with a real decoder.</p>
+<pre id="out">running…</pre>
+<script type="module">
+import { runAll } from "./selftest.js";
+const out = document.getElementById("out");
+const results = await runAll();
+globalThis.results = results;
+out.textContent = results.map((r) =>
+  `${r.ok ? "PASS" : "FAIL"}  ${r.url}\n` +
+  Object.entries(r).filter(([k]) => k !== "url" && k !== "ok")
+    .map(([k, v]) => `        ${k}: ${Array.isArray(v) ? v.join(", ") : v}`).join("\n")
+).join("\n\n");
+</script>
+</body>
+</html>

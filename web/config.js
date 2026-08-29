@@ -19,6 +19,13 @@ export const CONFIG = {
   fresh: params.has("fresh"),
   /** Prefill the magnet field, so a test run is one click. */
   magnet: params.get("magnet") ?? "",
+  /**
+   * Play a plain URL instead of a torrent.
+   *
+   * A test hook, not a feature: it pins one file to one playback route so an engine can be fixed
+   * without first finding a torrent that happens to contain the codec in question.
+   */
+  local: params.get("local") ?? "",
 
   /** Pieces the client will hold before it must be granted more. */
   creditStart: Number(params.get("credit") ?? 64),

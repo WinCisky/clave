@@ -257,3 +257,62 @@ progress::-moz-progress-bar { background: var(--cell-3); }
 }
 .log div { padding: 1px 0; }
 .log div.bad { color: var(--danger); }
+
+/* -- Step 4: the player ------------------------------------------------------------------------ */
+
+.player {
+  position: relative;
+  background: #000;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--text) 12%, transparent);
+}
+
+.player video {
+  display: block;
+  width: 100%;
+  max-height: 70vh;
+  background: #000;
+}
+
+/*
+ * What has been downloaded, laid out along the same axis as the video's own scrubber. Native
+ * controls cannot show this, and it is the one thing a viewer of a torrent stream actually needs to
+ * see: where seeking will be instant and where it will wait.
+ */
+.strip {
+  height: 6px;
+  background: color-mix(in srgb, var(--text) 14%, transparent);
+  background-image: var(--runs, none);
+  background-repeat: no-repeat;
+}
+
+.tracks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-top: 12px;
+}
+
+.tracks label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.tracks select {
+  font: inherit;
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--text) 18%, transparent);
+  background: var(--panel);
+  color: var(--text);
+}
+
+#step-watch .stats { margin-top: 14px; }
+#step-watch .stat dd { font-variant-numeric: tabular-nums; }
+
+/* A route that needed work is worth noticing; a plain copy is not. */
+.route-transcode-audio, .route-legacy { color: var(--warn); }
