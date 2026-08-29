@@ -311,8 +311,19 @@ progress::-moz-progress-bar { background: var(--cell-3); }
   color: var(--text);
 }
 
-#step-watch .stats { margin-top: 14px; }
-#step-watch .stat dd { font-variant-numeric: tabular-nums; }
+/*
+ * The player leads the panel, so it gets room to breathe and everything below it reads as evidence
+ * for what it is doing rather than as a second thing to look at.
+ */
+.player { margin-bottom: 16px; }
+/*
+ * The merged panel carries fifteen readings, and at the default column width the ones that are words
+ * rather than numbers ("copy video, re-encode audio") all truncate to nothing useful.
+ */
+#step-recover .stats {
+  margin-top: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+}
 
 /* A route that needed work is worth noticing; a plain copy is not. */
 .route-transcode-audio, .route-legacy { color: var(--warn); }

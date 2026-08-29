@@ -150,10 +150,17 @@ isolation). Dialling a live swarm cannot be hermetic, so that part is the integr
 
 ## The browser client
 
-`web/` is a static four-step page — no framework, no build step — that does the client half of the
-contract for real: it resolves a magnet, offers a choice when a torrent holds more than one video,
-recovers the pieces into the browser's own filesystem showing progress as a
-GitHub-contributions-style grid, and plays the result while it is still arriving.
+`web/` is a static three-step page — no framework, no build step — that does the client half of the
+contract for real: paste a magnet, pick a video if the torrent holds more than one, and it plays.
+
+There are no controls. Recovery starts the moment there is a file to recover — as soon as the magnet
+resolves when there is only one video, or as soon as one is picked when there are several — and the
+player opens itself behind it. A Start button only ever delayed the download by however long it took
+someone to notice it, and everything else it sat beside (pause, seek-by-piece, save, clear) was a
+control for a download rather than for watching something.
+
+Recovering and watching are one panel, because they are one activity: the video leads, and the
+progress grid sits underneath it as the evidence for what the player is doing.
 
 ```bash
 node scripts/devserver.mjs          # then open http://localhost:8080/?bstream=/bstream
@@ -161,7 +168,7 @@ node scripts/devserver.mjs          # then open http://localhost:8080/?bstream=/
 
 | file | job |
 | --- | --- |
-| `web/index.html`, `styles.css` | the four steps, the grid, the player, the legend |
+| `web/index.html`, `styles.css` | the three steps, the player, the grid, the legend |
 | `web/app.js` | step machine, file chooser, grid painting, stats. Touches no video bytes |
 | `web/stream-worker.js` | a Web Worker owning the WebSocket, SHA-1 and OPFS writes |
 | `web/wsproto.js` | browser mirror of `src/wsproto.ts` |
@@ -436,6 +443,28 @@ plausible segment counts and plausible byte totals, and only a real decoder disa
 - **A seek started the audio where the viewer asked, not where the video actually began.** A seek
   lands on the key packet *before* the target, so asking audio for the requested time left the sound
   two seconds ahead of the picture for the rest of the film.
+- **A zero-length packet is not a drain signal, but `avcodec_send_packet` thinks it is.** Theora
+  encodes a repeated frame as an empty packet, and plenty of real files are full of them: the
+  archive.org Big Buck Bunny `.ogv` decoded **exactly one video frame** and then returned
+  `AVERROR_EOF` for every packet after it. The symptom pointed everywhere except the cause — a
+  `SourceBuffer` reports the *intersection* of its tracks, so a one-frame video track against
+  minutes of audio showed nothing buffered at all, which meant the pump never throttled, which
+  meant it filled the buffer until MediaSource refused it with `QuotaExceededError` after 10.5 MiB.
+  Three plausible theories died before the packet lengths got measured. Empty packets are now
+  filtered out, and `theora-dupframes.ogv` is a fixture that decodes one frame without the filter
+  and forty-two with it.
+- **The buffer throttle measured the wrong thing when nothing was playing.** It asked how far the
+  buffer ran *ahead of the playhead*, and returned zero when the playhead sat outside every buffered
+  range — reporting "empty, keep going" about a buffer that was filling up. It now measures the run
+  waiting for the playhead when the playhead is behind it.
+- **`{ type: "player_stat", ...event }` never worked.** The spread carries the event's own `type` and
+  overwrites the outer one, so every statistic and every engine error the player reported was
+  silently dropped by the page's message switch. It was invisible precisely because the errors it
+  swallowed were the ones that would have said so.
+- **Appending a whole decode batch before checking the buffer overshoots badly.** One megabyte of Ogg
+  is close to fifteen seconds of video, and four was closer to a minute. Throttling now happens
+  between segments, and both engines append through a single path so no code route can skip the
+  timeline alignment — the flush after `finalize()` used to be exactly that route.
 - **The extension bundles import a bare `"mediabunny"` specifier**, which no browser can resolve —
   and an import map would not help, because these load inside a Web Worker and import maps are
   scoped to a document. `scripts/vendor.mjs` rewrites it at vendor time. Without this the AC-3, DTS
@@ -452,17 +481,21 @@ plausible segment counts and plausible byte totals, and only a real decoder disa
   bstream but not cached locally, so a cold start re-derives them. This is the obvious next
   cold-start win.
 - **BitTorrent v2 / hybrid torrents** are not handled; v1 SHA-1 pieces only.
+- **Nothing exports or clears the stored file.** Removing the controls took `Save file` and
+  `Clear storage` with them, so a watched film stays in OPFS with no route out except the browser's
+  own site-data settings. The worker code that did both was removed rather than left unreachable.
 - **Styled subtitles (ASS/SSA) are listed but not rendered**, and neither are bitmap ones (PGS,
   VobSub). Text tracks are also read only from Matroska, which is where they actually live in
   practice; MP4's `tx3g` is not.
 - **HEVC without a hardware decoder cannot be played.** The compatibility build deliberately omits
   H.264, HEVC, AV1 and VP8/9 — decoding those in WebAssembly would be far slower than realtime, so
   there is no second opinion to offer and the page says so by name instead.
-- **Playback was not observed end to end in the automation.** The browser window there is
-  permanently occluded, and Chrome defers media-element loading for a hidden document, so
-  `MediaSource` never attaches — not a property of the code, but it means the last few lines
-  (`video.srcObject = handle` through to a moving picture) are verified only by the pieces either
-  side of them: the muxed output decodes correctly in ffmpeg, and the handle reaches the element.
+- **The picture was never watched moving.** In the automation the browser's document reports
+  `hidden`, so Chrome will not run a media element's playback clock. Everything up to that does now
+  verify there: the handle attaches, the segments are accepted, `readyState` reaches
+  `HAVE_ENOUGH_DATA`, the buffer holds the expected thirty seconds and `videoWidth`/`videoHeight`
+  report the real decoded dimensions — 1024×436 for Sintel, 532×300 for the Theora transcode. Only
+  `currentTime` advancing was not seen.
 - Cloudflare's Self-Serve Agreement §2.2.1(j) prohibits "a virtual private network or other similar
   proxy services", and Cloudflare publishes no definition covering a peer relay of this shape.
   Stated as a fact about the terms, not as advice.

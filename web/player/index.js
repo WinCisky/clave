@@ -85,7 +85,7 @@ export class Player {
       const { LibavEngine } = await import("./engine-libav.js");
       this.#engine = new LibavEngine({
         store: this.#store, plan, sink: this.#sink,
-        name: this.#fileName, onEvent: (event) => this.#post({ type: "player_stat", ...event }),
+        name: this.#fileName, onEvent: (event) => this.#post({ type: "player_stat", stat: event }),
       });
       let detail;
       try {
@@ -95,12 +95,21 @@ export class Player {
         this.#engine = null;
         return;
       }
+      // The probe found no duration in the container's metadata for these formats; libav has it.
+      if (plan.duration == null) {
+        const duration = await this.#engine.duration();
+        if (duration !== null) {
+          plan.duration = duration;
+          await this.#sink.setDuration(duration);
+          this.#post({ type: "player_duration", duration });
+        }
+      }
       this.#post({ type: "player_engine", engine: "libav", detail });
     } else {
       const { MediabunnyEngine } = await import("./engine-mediabunny.js");
       this.#engine = new MediabunnyEngine({
         source: new CustomSource(source), plan, sink: this.#sink,
-        onEvent: (event) => this.#post({ type: "player_stat", ...event }),
+        onEvent: (event) => this.#post({ type: "player_stat", stat: event }),
       });
       await this.#engine.prepare();
       this.#post({ type: "player_engine", engine: "mediabunny" });

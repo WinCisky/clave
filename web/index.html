@@ -59,14 +59,38 @@
   </section>
 
   <!-- Step 3 ---------------------------------------------------------------------------------- -->
+  <!--
+    One panel, not two. Recovering and watching are the same activity here — the video plays out of
+    the pieces as they land — so splitting them put the thing you came for below the fold and behind
+    a button. The player leads; the grid underneath is the evidence for what the player is doing.
+  -->
   <section class="step" id="step-recover" hidden>
     <header>
       <span class="badge">3</span>
-      <h2>Recover</h2>
+      <h2>Watch</h2>
       <span class="step-note" id="recover-note"></span>
     </header>
     <div class="body">
+      <div class="player">
+        <video id="video" controls playsinline></video>
+        <div class="strip" id="strip" role="img"
+             aria-label="Which parts of the file have been downloaded"></div>
+      </div>
+
+      <div class="tracks" id="tracks" hidden>
+        <label id="audio-label" hidden>Audio <select id="audio-track"></select></label>
+        <label id="sub-label" hidden>Subtitles <select id="sub-track"></select></label>
+      </div>
+
+      <div class="message" id="watch-message" hidden></div>
+
       <dl class="stats">
+        <div class="stat"><dt>Route</dt><dd id="w-route">—</dd></div>
+        <div class="stat"><dt>Container</dt><dd id="w-container">—</dd></div>
+        <div class="stat"><dt>Video</dt><dd id="w-video">—</dd></div>
+        <div class="stat"><dt>Audio</dt><dd id="w-audio">—</dd></div>
+        <div class="stat"><dt>Buffered</dt><dd id="w-buffered">—</dd></div>
+        <div class="stat"><dt>Transcode</dt><dd id="w-speed">—</dd></div>
         <div class="stat"><dt>Pieces</dt><dd id="s-pieces">—</dd></div>
         <div class="stat"><dt>Written</dt><dd id="s-bytes">—</dd></div>
         <div class="stat"><dt>Rate</dt><dd id="s-rate">—</dd></div>
@@ -91,51 +115,8 @@
         <span><i style="background:var(--cell-bad)"></i> failed SHA-1, re-fetching</span>
       </div>
 
-      <div class="row">
-        <button class="primary" id="start">Start</button>
-        <button id="pause" disabled>Pause</button>
-        <input type="number" id="seek-piece" min="0" placeholder="piece" disabled
-               style="width:96px;flex:0 0 auto">
-        <button id="seek" disabled>Seek</button>
-        <button id="watch" disabled>Watch</button>
-        <button id="save" disabled>Save file</button>
-        <button id="clear" class="danger">Clear storage</button>
-      </div>
-
       <div class="message" id="recover-message" hidden></div>
       <div class="log" id="log"></div>
-    </div>
-  </section>
-
-  <!-- Step 4 ---------------------------------------------------------------------------------- -->
-  <section class="step" id="step-watch" hidden>
-    <header>
-      <span class="badge">4</span>
-      <h2>Watch</h2>
-      <span class="step-note" id="watch-note"></span>
-    </header>
-    <div class="body">
-      <div class="player">
-        <video id="video" controls playsinline></video>
-        <div class="strip" id="strip" role="img"
-             aria-label="Which parts of the file have been downloaded"></div>
-      </div>
-
-      <div class="tracks" id="tracks" hidden>
-        <label id="audio-label" hidden>Audio <select id="audio-track"></select></label>
-        <label id="sub-label" hidden>Subtitles <select id="sub-track"></select></label>
-      </div>
-
-      <dl class="stats">
-        <div class="stat"><dt>Route</dt><dd id="w-route">—</dd></div>
-        <div class="stat"><dt>Container</dt><dd id="w-container">—</dd></div>
-        <div class="stat"><dt>Video</dt><dd id="w-video">—</dd></div>
-        <div class="stat"><dt>Audio</dt><dd id="w-audio">—</dd></div>
-        <div class="stat"><dt>Buffered</dt><dd id="w-buffered">—</dd></div>
-        <div class="stat"><dt>Transcode</dt><dd id="w-speed">—</dd></div>
-      </dl>
-
-      <div class="message" id="watch-message" hidden></div>
     </div>
   </section>
 </main>

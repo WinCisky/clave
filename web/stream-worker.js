@@ -50,7 +50,6 @@ const state = {
   reconcileRounds: 0,
   lastMissing: -1,
   finished: false,
-  paused: false,
   stopped: false,
   corruptPiece: -1,
   corruptedOnce: false,
@@ -68,20 +67,6 @@ self.onmessage = (event) => {
   switch (message.type) {
     case "start":
       void start(message).catch((err) => fail("start_failed", describe(err)));
-      break;
-    case "pause":
-      state.paused = true;
-      post({ type: "paused" });
-      break;
-    case "resume":
-      state.paused = false;
-      grant(state.creditGrant);
-      post({ type: "resumed" });
-      break;
-    case "seek":
-      if (state.socket?.readyState === WebSocket.OPEN) {
-        state.socket.send(client.seekPiece(message.piece));
-      }
       break;
     case "stop":
       void teardown("stopped");
@@ -103,15 +88,6 @@ self.onmessage = (event) => {
       break;
     case "player_subtitles":
       void state.player?.chooseSubtitles(message.track);
-      break;
-    case "save":
-      void save().catch((err) => fail("save_failed", describe(err)));
-      break;
-    case "clear":
-      void clearStorage(message.infoHash).then(
-        () => post({ type: "cleared" }),
-        (err) => fail("clear_failed", describe(err)),
-      );
       break;
   }
 };
@@ -265,7 +241,7 @@ async function onPiece({ pieceIndex, bytes }) {
   mark(pieceIndex, OK);
 
   state.sinceGrant += 1;
-  if (!state.paused && state.sinceGrant >= state.creditEvery) {
+  if (state.sinceGrant >= state.creditEvery) {
     state.sinceGrant = 0;
     grant(state.creditGrant);
   }
@@ -336,23 +312,6 @@ function readAt(offset, length) {
   }
   if (state.memory !== null) return state.memory.subarray(offset, offset + length);
   throw new Error("nothing is stored to read from");
-}
-
-/**
- * Hand the page the finished file.
- *
- * This moved out of the page when playback moved in: the sync access handle is exclusive and now
- * stays open for as long as the player might read from it, so `getFileHandle().getFile()` on the
- * main thread would be locked out.
- */
-async function save() {
-  const size = state.fileEntry.length;
-  const parts = [];
-  const CHUNK = 8 * 1024 * 1024;
-  for (let at = 0; at < size; at += CHUNK) {
-    parts.push(readAt(at, Math.min(CHUNK, size - at)).slice());
-  }
-  post({ type: "file", name: state.fileEntry.name, blob: new Blob(parts) });
 }
 
 /** Write only the part of this piece that belongs to the chosen file. */
@@ -467,7 +426,6 @@ function progress() {
       : Number.POSITIVE_INFINITY,
     epoch: state.epoch,
     swarm: state.swarm,
-    paused: state.paused,
   });
 }
 
@@ -579,12 +537,6 @@ function closeHandles() {
   }
   state.file = null;
   state.bitmap = null;
-}
-
-async function clearStorage(infoHash) {
-  await teardown("cleared");
-  const root = await navigator.storage.getDirectory();
-  await root.removeEntry(infoHash, { recursive: true }).catch(() => {});
 }
 
 async function teardown(reason) {

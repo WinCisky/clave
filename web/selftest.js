@@ -168,6 +168,7 @@ const FIXTURES = [
   "/fixtures/h264-eac3-subs.mkv",
   "/fixtures/xvid-ac3.avi",
   "/fixtures/theora-vorbis.ogv",
+  "/fixtures/theora-dupframes.ogv",
   "/fixtures/mpeg2-mp2.mpg",
   "/fixtures/wmv2-wmav2.wmv",
 ];

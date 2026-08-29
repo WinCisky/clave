@@ -14,6 +14,11 @@
 /** Keep this much played-back video behind the playhead before evicting it. */
 const KEEP_BEHIND_SECONDS = 30;
 
+const describeRanges = (ranges) =>
+  ranges.length === 0
+    ? "nothing"
+    : ranges.map(([start, end]) => `${start.toFixed(1)}-${end.toFixed(1)}s`).join(", ");
+
 export class Sink {
   #mediaSource;
   #buffer = null;
@@ -22,6 +27,7 @@ export class Sink {
   #opened;
   #playhead = 0;
   #ended = false;
+  #appended = 0;
 
   constructor() {
     this.#mediaSource = new MediaSource();
@@ -68,23 +74,49 @@ export class Sink {
     return ranges;
   }
 
-  /** How many seconds are buffered continuously from `time` forward. */
+  /**
+   * How many seconds are buffered continuously from `time` forward.
+   *
+   * The fallback matters more than the common case. Nothing has to be *playing* for the pump to be
+   * filling the buffer, and if the playhead sits outside every buffered range — sitting at zero
+   * while the muxer's output landed somewhere else — then returning zero says "empty, keep going"
+   * about a buffer that is filling up. The pump never throttles, and MediaSource eventually answers
+   * with `QuotaExceededError`. So when the playhead is behind the buffer, measure the run that is
+   * waiting for it.
+   */
   aheadOf(time) {
-    for (const [start, end] of this.buffered()) {
+    const ranges = this.buffered();
+    for (const [start, end] of ranges) {
       if (time >= start - 0.25 && time < end) return end - time;
     }
-    return 0;
+    const next = ranges.find(([start]) => start >= time);
+    return next === undefined ? 0 : next[1] - next[0];
   }
 
   append(bytes) {
     return this.#enqueue(async () => {
+      this.#appended += bytes.length;
       try {
         await this.#appendOnce(bytes);
       } catch (err) {
         if (err?.name !== "QuotaExceededError") throw err;
-        // The buffer is full, not broken. Drop what has already been watched and try once more.
-        await this.#removeOnce(0, Math.max(0, this.#playhead - KEEP_BEHIND_SECONDS));
-        await this.#appendOnce(bytes);
+        // The buffer is full, not broken. Drop what has already been watched — and if nothing has
+        // been watched, drop the oldest run anyway, because refusing to append is worse.
+        const behind = Math.max(0, this.#playhead - KEEP_BEHIND_SECONDS);
+        const ranges = this.buffered();
+        if (behind > 0) await this.#removeOnce(0, behind);
+        else if (ranges.length > 0) await this.#removeOnce(ranges[0][0], ranges[0][0] + KEEP_BEHIND_SECONDS);
+        try {
+          await this.#appendOnce(bytes);
+        } catch (retry) {
+          if (retry?.name !== "QuotaExceededError") throw retry;
+          // Report the numbers rather than the name. "The SourceBuffer is full" says nothing about
+          // whether the throttle failed, the segments are enormous, or the browser's budget is
+          // simply smaller than expected.
+          throw new Error(
+            `the media buffer is full after ${(this.#appended / 1048576).toFixed(1)} MiB, ` +
+            `holding ${describeRanges(ranges)} with the playhead at ${this.#playhead.toFixed(1)}s`);
+        }
       }
     });
   }

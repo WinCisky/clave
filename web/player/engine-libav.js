@@ -35,8 +35,14 @@ const KEYFRAME_SECONDS = 2;
 const TARGET_BUFFER_SECONDS = 30;
 const IDLE_MS = 200;
 
-/** How much of the file to hand libav per demux call. Small enough to stay responsive. */
-const READ_LIMIT = 4 * 1024 * 1024;
+/**
+ * How much of the file to hand libav per demux call.
+ *
+ * Deliberately small. Four megabytes of Ogg is close to a minute of video, and a whole minute
+ * decoded and encoded before the loop next looks at the buffer is both a latency spike and a pile of
+ * frames sitting in the encoder queue.
+ */
+const READ_LIMIT = 1024 * 1024;
 
 const AVMEDIA_TYPE_VIDEO = 0;
 const AVMEDIA_TYPE_AUDIO = 1;
@@ -89,6 +95,8 @@ export class LibavEngine {
 
   #generation = 0;
   #started = false;
+  #reportedSize = false;
+  #offsetSettled = false;
 
   constructor({ store, plan, sink, onEvent, name }) {
     this.#store = store;
@@ -139,13 +147,44 @@ export class LibavEngine {
     return this.describe();
   }
 
-  describe() {
+  /**
+   * How long the film runs, in seconds, or null.
+   *
+   * Worth asking libav for: Ogg and MPEG program streams declare nothing a container-level metadata
+   * read can find, so without this the scrubber has no length and a viewer cannot seek at all.
+   */
+  async duration() {
+    try {
+      const low = await this.#libav.AVFormatContext_duration(this.#format);
+      const high = await this.#libav.AVFormatContext_durationhi(this.#format);
+      const microseconds = this.#libav.i64tof64(low, high);
+      if (!Number.isFinite(microseconds) || microseconds <= 0) return null;
+      const seconds = microseconds / 1e6;
+      return seconds < 1e6 ? seconds : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * What this file actually is, in libav's words.
+   *
+   * The probe's own description is empty on this route — mediabunny could not read the container,
+   * which is why we are here — so without this the panel says "—" and "none" about a file that is
+   * playing perfectly well.
+   */
+  async describe() {
+    const name = async (stream) =>
+      stream === null ? null : await this.#libav.avcodec_get_name(stream.codec_id).catch(() => null);
+
+    const audioStreams = this.#streams.filter((stream) => stream.codec_type === AVMEDIA_TYPE_AUDIO);
     return {
-      videoCodecId: this.#video?.codec_id ?? null,
-      audioCodecId: this.#audio?.codec_id ?? null,
-      audioStreams: this.#streams
-        .filter((stream) => stream.codec_type === AVMEDIA_TYPE_AUDIO)
-        .map((stream) => ({ index: stream.index, codecId: stream.codec_id })),
+      video: { codec: await name(this.#video) },
+      audio: this.#audio === null ? null : { codec: await name(this.#audio), index: this.#audio.index },
+      audioStreams: await Promise.all(audioStreams.map(async (stream) => ({
+        index: stream.index,
+        codec: await name(stream),
+      }))),
     };
   }
 
@@ -249,7 +288,7 @@ export class LibavEngine {
     if (generation !== this.#generation) { await output.cancel(); return; }
 
     let base = null;
-    let offsetSettled = false;
+    this.#offsetSettled = false;
     let framesEncoded = 0;
     /**
      * Fallback clocks, for streams whose frames carry no usable presentation time at all — which is
@@ -280,7 +319,7 @@ export class LibavEngine {
       // mean anything.
       const decoded = [];
 
-      const videoPackets = byStream[this.#videoDecoder.index] ?? [];
+      const videoPackets = decodable(byStream[this.#videoDecoder.index]);
       if (videoPackets.length > 0) {
         const frames = await libav.ff_decode_multi(
           this.#videoDecoder.ctx, this.#videoDecoder.pkt, this.#videoDecoder.frame,
@@ -289,6 +328,10 @@ export class LibavEngine {
           const at = secondsOf(libav, frame, this.#video, () => videoClock ?? base ?? 0);
           videoClock = at + 1 / 25;
           if (base === null) base = at;
+          if (!this.#reportedSize && frame.width > 0) {
+            this.#reportedSize = true;
+            this.#onEvent({ type: "video_size", width: frame.width, height: frame.height });
+          }
           decoded.push({ at, video: frame });
           mediaSeconds = Math.max(mediaSeconds, at);
         }
@@ -324,32 +367,12 @@ export class LibavEngine {
         }
       }
 
-      const produced = segments.take();
-      if (produced.length > 0) {
-        for (const segment of produced) {
-          if (!segment.init && !offsetSettled && base !== null) {
-            offsetSettled = true;
-            await this.#sink.alignTo(base, segment.timestamp);
-          }
-          await this.#sink.append(concat(segment.parts));
-        }
-
-        const elapsed = (Date.now() - startedAt) / 1000;
-        this.#onEvent({
-          type: "transcode",
-          framesEncoded,
-          // How many seconds of film are produced per second of wall clock. Below 1 and playback
-          // will eventually catch up with the transcoder, which is worth saying out loud.
-          speed: elapsed > 0 ? (mediaSeconds - fromTime) / elapsed : 0,
-          ahead: this.#sink.aheadOf(this.#sink.playhead),
-        });
-        await this.#waitForRoom(generation);
-      }
+      await this.#drain(segments, base, generation, { framesEncoded, mediaSeconds, fromTime, startedAt });
     }
 
     await output.finalize();
     if (generation !== this.#generation) return;
-    for (const segment of segments.take()) await this.#sink.append(concat(segment.parts));
+    await this.#drain(segments, base, generation, { framesEncoded, mediaSeconds, fromTime, startedAt });
     await this.#sink.end();
     this.#onEvent({ type: "buffer_complete" });
   }
@@ -392,6 +415,40 @@ export class LibavEngine {
     });
   }
 
+  /**
+   * Append what the muxer has produced, one segment at a time, waiting for room between each.
+   *
+   * Per segment, not per batch. A single four-megabyte read of an Ogg file yields close to a minute
+   * of video, and appending all of it before looking at the buffer overshoots the target by an order
+   * of magnitude — which MediaSource eventually answers with `QuotaExceededError`. This is also the
+   * only path that appends, so the timeline alignment cannot be skipped by a code path that forgot
+   * about it: the final flush after `finalize()` used to be exactly that.
+   */
+  async #drain(segments, base, generation, progress) {
+    for (const segment of segments.take()) {
+      if (generation !== this.#generation) return;
+      if (!segment.init) {
+        if (!this.#offsetSettled && base !== null) {
+          this.#offsetSettled = true;
+          await this.#sink.alignTo(base, segment.timestamp);
+          this.#onEvent({ type: "aligned", base, fragment: segment.timestamp });
+        }
+        await this.#waitForRoom(generation);
+      }
+      await this.#sink.append(concat(segment.parts));
+    }
+
+    const elapsed = (Date.now() - progress.startedAt) / 1000;
+    this.#onEvent({
+      type: "transcode",
+      framesEncoded: progress.framesEncoded,
+      // How many seconds of film are produced per second of wall clock. Below 1 and playback will
+      // eventually catch up with the transcoder, which is worth saying out loud.
+      speed: elapsed > 0 ? (progress.mediaSeconds - progress.fromTime) / elapsed : 0,
+      ahead: this.#sink.aheadOf(this.#sink.playhead),
+    });
+  }
+
   async #waitForRoom(generation) {
     while (generation === this.#generation &&
            this.#sink.aheadOf(this.#sink.playhead) > TARGET_BUFFER_SECONDS) {
@@ -417,6 +474,19 @@ export class LibavEngine {
  * very first audio frame. Legacy containers are full of streams with no timestamps at all, so the
  * clock has to be able to run on its own.
  */
+/**
+ * Drop empty packets before they reach a decoder.
+ *
+ * A zero-length packet is how Theora encodes "this frame is identical to the last one", and plenty
+ * of real files are full of them. `avcodec_send_packet` reads a zero-size packet as the *drain*
+ * signal instead, so the decoder finishes, and every packet after it comes back `AVERROR_EOF`. The
+ * symptom is a video track exactly one frame long while audio decodes for minutes: the SourceBuffer
+ * reports the intersection of its tracks, so it shows nothing buffered, nothing throttles the pump,
+ * and the buffer fills with audio until MediaSource refuses it. Skipping them is also correct on the
+ * merits — the following packet's timestamp already accounts for the repeated frame's duration.
+ */
+const decodable = (packets) => (packets ?? []).filter((packet) => (packet.data?.length ?? 0) > 0);
+
 function secondsOf(libav, frame, stream, clock) {
   // A time base is a pair, and has to be taken as one. The AVI decoder reports `0/1`, so picking
   // the numerator and denominator independently takes 1 from the stream and 1 from the frame and

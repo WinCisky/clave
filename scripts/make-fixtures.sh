@@ -35,6 +35,13 @@ ffmpeg $q $short -c:v libx265 -preset veryfast -pix_fmt yuv420p -tag:v hvc1 -c:a
 ffmpeg $q $short -c:v mpeg4 -vtag XVID -qscale:v 5 -c:a ac3 -ac 6 xvid-ac3.avi
 ffmpeg $q $short -c:v libtheora -qscale:v 6 -c:a libvorbis theora-vorbis.ogv
 ffmpeg $q $short -c:v mpeg2video -qscale:v 5 -c:a mp2 mpeg2-mp2.mpg
+
+# A static picture, so libtheora encodes most frames as zero-length "same as the last one" packets.
+# Those are what `avcodec_send_packet` reads as a drain signal, and this file is the regression case:
+# without the empty-packet filter its video track decodes exactly one frame.
+ffmpeg $q -f lavfi -i "color=c=blue:size=320x180:rate=25:duration=20" \
+  -f lavfi -i "sine=frequency=440:duration=20" \
+  -c:v libtheora -qscale:v 7 -c:a libvorbis theora-dupframes.ogv
 ffmpeg $q $short -c:v wmv2 -qscale:v 5 -c:a wmav2 wmv2-wmav2.wmv
 
 # Embedded text subtitles.

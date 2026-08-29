@@ -139,7 +139,7 @@ export class MediabunnyEngine {
     // The muxer places fragments at the timestamps it is given, but whether those are the source's
     // absolute timestamps or rebased to zero is not something to assume — so it is measured from the
     // first fragment and corrected with the SourceBuffer's own offset.
-    let offsetSettled = false;
+    const state = { base, settled: false };
 
     while (!v.done || !a.done) {
       if (generation !== this.#generation) { await output.cancel(); return; }
@@ -155,17 +155,7 @@ export class MediabunnyEngine {
         v = await video.next();
       }
 
-      const produced = segments.take();
-      if (produced.length > 0) {
-        for (const segment of produced) {
-          // The offset that puts this run back on the film's timeline can only be measured from the
-          // first real fragment, and must be set before that fragment is appended.
-          if (!segment.init && !offsetSettled) {
-            offsetSettled = true;
-            await this.#sink.alignTo(base, segment.timestamp);
-          }
-          await this.#sink.append(concat(segment.parts));
-        }
+      if (await drain(segments, this.#sink, state, generation, () => this.#generation)) {
         this.#onEvent({ type: "buffer", ahead: this.#sink.aheadOf(this.#sink.playhead) });
         await this.#waitForRoom(generation);
       }
@@ -173,7 +163,9 @@ export class MediabunnyEngine {
 
     await output.finalize();
     if (generation !== this.#generation) return;
-    for (const segment of segments.take()) await this.#sink.append(concat(segment.parts));
+    // Through the same path, so a short file whose only fragment appears at finalize is still
+    // aligned rather than dropped onto the wrong part of the timeline.
+    await drain(segments, this.#sink, state, generation, () => this.#generation);
     await this.#sink.end();
     this.#onEvent({ type: "buffer_complete" });
   }
@@ -229,6 +221,26 @@ export class MediabunnyEngine {
       await new Promise((resolve) => setTimeout(resolve, IDLE_MS));
     }
   }
+}
+
+/**
+ * Append what the muxer produced, aligning the timeline on the first real fragment.
+ *
+ * The single place that appends, so no path can skip the alignment. Returns whether anything was
+ * appended.
+ */
+async function drain(segments, sink, state, generation, current) {
+  let appended = false;
+  for (const segment of segments.take()) {
+    if (generation !== current()) return appended;
+    if (!segment.init && !state.settled) {
+      state.settled = true;
+      await sink.alignTo(state.base, segment.timestamp);
+    }
+    await sink.append(concat(segment.parts));
+    appended = true;
+  }
+  return appended;
 }
 
 /** Every packet of a track from `from` onwards, starting at the key packet that covers it. */

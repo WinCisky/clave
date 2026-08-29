@@ -52,15 +52,6 @@ const el = {
   grid: $("grid"),
   bar: $("bar"),
   log: $("log"),
-  start: $("start"),
-  pause: $("pause"),
-  seek: $("seek"),
-  seekPiece: $("seek-piece"),
-  save: $("save"),
-  clear: $("clear"),
-  watch: $("watch"),
-  stepWatch: $("step-watch"),
-  watchNote: $("watch-note"),
   watchMessage: $("watch-message"),
   video: $("video"),
   strip: $("strip"),
@@ -90,8 +81,8 @@ const session = {
   firstPiece: 0,
   worker: null,
   running: false,
-  paused: false,
   watching: false,
+  encode: null,
   duration: null,
   textTrack: null,
   lastPlayhead: -1,
@@ -297,8 +288,8 @@ function prepareGrid(file) {
   el.recoverNote.textContent = `${file.name} · ${formatBytes(file.length)} · pieces ${range.first}–${range.last}`;
   el.steps.recover.hidden = false;
   el.steps.recover.classList.add("active");
-  el.start.disabled = false;
   el.steps.recover.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  start();
 }
 
 /** The pieces the relay fetches before anything else: a head window, then a proportional tail. */
@@ -321,14 +312,22 @@ function bootstrapPieces(chunks, file, range) {
   return pieces;
 }
 
-el.start.onclick = () => {
+/**
+ * Begin, as soon as there is something to begin on.
+ *
+ * There is nothing to ask the viewer at this point: they pasted a magnet and picked a video, which
+ * is the whole of the decision. A Start button here only delayed the download by however long it
+ * took someone to notice it.
+ */
+function start() {
   if (session.running) return;
   session.running = true;
-  el.start.disabled = true;
-  el.pause.disabled = false;
-  el.seek.disabled = false;
-  el.seekPiece.disabled = false;
   message(el.recoverMessage, null);
+
+  // Picking a file now starts it, so the chooser has to close behind itself: a second click would
+  // otherwise repaint the grid for one file while the relay carried on streaming another. Changing
+  // your mind means starting over, which is what the button in step 1 is for.
+  for (const button of document.querySelectorAll(".file")) button.disabled = true;
 
   const worker = new Worker(new URL("./stream-worker.js", import.meta.url), { type: "module" });
   session.worker = worker;
@@ -355,75 +354,44 @@ el.start.onclick = () => {
     creditEvery: CONFIG.creditEvery,
     fresh: CONFIG.fresh,
   });
-};
+}
 
-el.pause.onclick = () => {
-  session.paused = !session.paused;
-  session.worker?.postMessage({ type: session.paused ? "pause" : "resume" });
-  el.pause.textContent = session.paused ? "Resume" : "Pause";
-};
-
-el.seek.onclick = () => {
-  const piece = Number(el.seekPiece.value);
-  if (!Number.isInteger(piece)) {
-    message(el.recoverMessage, "warn", "Enter a piece number to seek to.");
-    return;
-  }
-  session.worker?.postMessage({ type: "seek", piece });
-  log(`seek to piece ${piece}`);
-};
-
-el.clear.onclick = () => {
-  session.worker?.postMessage({ type: "clear", infoHash: session.infoHash });
-  if (session.worker === null) void clearWithoutWorker();
-};
-
-el.save.onclick = () => {
-  // The worker holds the file's only handle now, so it is the one that can read it back.
-  if (session.worker === null) {
-    message(el.recoverMessage, "warn", "Start the download first — there is nothing stored yet.");
-    return;
-  }
-  el.save.disabled = true;
-  session.worker.postMessage({ type: "save" });
-};
-
-el.watch.onclick = () => {
+/**
+ * Open the player.
+ *
+ * Called the moment storage is ready rather than on a button, and deliberately not waiting for any
+ * particular amount of data: the probe reads through the same gate everything else does, so it
+ * simply waits for the header bytes to land. Those are the first thing the relay fetches.
+ */
+function watch() {
   if (session.worker === null || session.watching) return;
   session.watching = true;
-  el.watch.disabled = true;
-  el.stepWatch.hidden = false;
-  el.stepWatch.classList.add("active");
-  el.watchNote.textContent = "reading the file's headers…";
-  el.stepWatch.scrollIntoView({ behavior: "smooth", block: "nearest" });
   session.worker.postMessage({ type: "watch" });
-};
+}
 
 function onWorkerMessage(message_) {
   switch (message_.type) {
     case "storage":
       log(`storage: ${message_.backend}${message_.resumedPieces > 0 ? `, resumed ${message_.resumedPieces} pieces` : ""}`);
-      el.watch.disabled = false;
-      break;
-    case "file":
-      receiveFile(message_.name, message_.blob);
+      watch();
       break;
     case "player_ready":
       onPlayerReady(message_.plan, message_.handle);
       break;
     case "player_engine":
       log(`player engine: ${message_.engine}`);
+      if (message_.detail !== undefined) describeLegacy(message_.detail);
+      break;
+    case "player_duration":
+      log(`duration from the decoder: ${formatDuration(message_.duration)}`);
       break;
     case "player_error":
       session.watching = false;
-      el.watch.disabled = false;
-      el.stepWatch.classList.remove("active");
       message(el.watchMessage, "error", message_.message);
-      el.watchNote.textContent = "cannot play this file";
       log(`player: ${message_.message}`, true);
       break;
     case "player_stat":
-      onPlayerStat(message_);
+      onPlayerStat(message_.stat);
       break;
     case "availability":
       paintStrip(message_);
@@ -439,7 +407,6 @@ function onWorkerMessage(message_) {
       break;
     case "local_ready":
       log(`local file: ${message_.name}, ${formatBytes(message_.bytes)}`);
-      el.watch.click();
       break;
     case "open":
       log("connected to the relay");
@@ -458,10 +425,6 @@ function onWorkerMessage(message_) {
       break;
     case "eof":
       session.running = false;
-      el.pause.disabled = true;
-      el.seek.disabled = true;
-      el.save.disabled = false;
-      el.watch.disabled = session.watching;
       el.steps.recover.classList.replace("active", "done");
       message(el.recoverMessage, "info",
         `Done. ${message_.verified} of ${message_.total} pieces verified, ${formatBytes(message_.bytes)} written in ${formatDuration(message_.elapsedMs / 1000)}${message_.naks > 0 ? `, ${message_.naks} re-fetched after a failed hash` : ""}.`);
@@ -482,16 +445,6 @@ function onWorkerMessage(message_) {
       break;
     case "closed":
       log(`connection closed (${message_.code})`);
-      break;
-    case "cleared":
-      message(el.recoverMessage, "info", "Local storage for this torrent has been cleared.");
-      for (const cell of session.cells) cell.className = cell.classList.contains("boot") ? "boot" : "";
-      break;
-    case "paused":
-      log("paused — no more credit granted");
-      break;
-    case "resumed":
-      log("resumed");
       break;
   }
 }
@@ -516,27 +469,6 @@ function renderProgress(p) {
   el.stat.epoch.textContent = String(p.epoch);
 }
 
-function receiveFile(name, blob) {
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = name;
-  anchor.click();
-  // Revoked late: the download reads from the object URL after the click returns.
-  setTimeout(() => URL.revokeObjectURL(url), 60_000);
-  el.save.disabled = false;
-}
-
-async function clearWithoutWorker() {
-  try {
-    const root = await navigator.storage.getDirectory();
-    await root.removeEntry(session.infoHash, { recursive: true });
-    message(el.recoverMessage, "info", "Local storage for this torrent has been cleared.");
-  } catch (err) {
-    message(el.recoverMessage, "warn", `Nothing to clear: ${describe(err)}`);
-  }
-}
-
 /**
  * `?local=<url>` — skip the swarm and play one file straight from HTTP.
  *
@@ -544,9 +476,12 @@ async function clearWithoutWorker() {
  * separating the two is what makes a playback failure attributable to the player.
  */
 function startLocal(url) {
-  for (const step of [el.steps.magnet, el.steps.file, el.steps.recover]) step.hidden = true;
-  el.steps.magnet.hidden = false;
   el.magnetNote.textContent = "local file mode";
+  // There is no torrent and no grid, so the panel has to be revealed here — normally `prepareGrid`
+  // does it once a file has been picked.
+  el.steps.recover.hidden = false;
+  el.steps.recover.classList.add("active");
+  el.recoverNote.textContent = url;
   message(el.magnetMessage, "info", `Playing ${url} directly — no torrent, no relay.`);
   el.steps.magnet.classList.replace("active", "done");
 
@@ -561,16 +496,21 @@ function startLocal(url) {
 if (CONFIG.local !== "") startLocal(CONFIG.local);
 
 // -------------------------------------------------------------------------------------------------
-// Step 4 — watch
+// The player half of step 3
 
+/*
+ * Short enough to fit the column. What was decoded and what it became is spelled out by the Video
+ * and Audio readings next to it, so this only has to name the shape of the work.
+ */
 const ROUTE_LABEL = {
-  copy: "copy — no decoding",
-  "transcode-audio": "copy video, re-encode audio",
-  legacy: "wasm decode, hardware re-encode",
+  copy: "copy, no decode",
+  "transcode-audio": "audio re-encoded",
+  legacy: "full transcode",
 };
 
 function onPlayerReady(plan, handle) {
   session.duration = plan.duration ?? null;
+  session.encode = plan.encode ?? null;
   // The worker owns the MediaSource; this is the only thing that crosses to the page.
   el.video.srcObject = handle;
 
@@ -588,9 +528,6 @@ function onPlayerReady(plan, handle) {
       (chosen.copy ? "" : ` → ${chosen.encodedAs}${chosen.encodedChannels !== chosen.channels ? ` ${chosen.encodedChannels}ch` : ""}`);
 
   fillAudioTracks(plan.audios, plan.audio?.id ?? null);
-  el.watchNote.textContent = plan.route === "copy"
-    ? "playing the file as it is"
-    : ROUTE_LABEL[plan.route] ?? "";
   if (plan.route === "legacy") {
     message(el.watchMessage, "warn",
       "This file uses a codec no browser can decode, so it is being decoded in WebAssembly and " +
@@ -599,7 +536,28 @@ function onPlayerReady(plan, handle) {
   }
 }
 
+/**
+ * Fill in the codec panel for the compatibility route.
+ *
+ * The probe describes what *mediabunny* saw, and on this route it saw nothing — the file is here
+ * precisely because that parser could not read it. libav's view is the only accurate one.
+ */
+function describeLegacy(detail) {
+  if (detail?.video?.codec) el.watchStat.video.textContent = detail.video.codec;
+  el.watchStat.audio.textContent = detail?.audio?.codec
+    ? `${detail.audio.codec} → ${session.encode?.audio ?? "re-encoded"}`
+    : "none";
+}
+
 function onPlayerStat(stat) {
+  if (stat.type === "video_size") {
+    const codec = el.watchStat.video.textContent.split(" ")[0];
+    el.watchStat.video.textContent = `${codec} ${stat.width}×${stat.height}`;
+    return;
+  }
+  if (stat.type === "aligned") {
+    log(`aligned: base ${stat.base.toFixed(3)}s, first fragment ${stat.fragment.toFixed(3)}s, offset ${(stat.base - stat.fragment).toFixed(3)}s`);
+  }
   if (typeof stat.ahead === "number") {
     el.watchStat.buffered.textContent = `${stat.ahead.toFixed(1)}s ahead`;
   }
@@ -629,9 +587,6 @@ function paintStrip({ ranges, size, startable }) {
   }
   el.strip.style.setProperty("--runs",
     stops.length === 0 ? "none" : `linear-gradient(to right, ${stops.join(",")})`);
-  if (startable && el.watchNote.textContent === "reading the file's headers…") {
-    el.watchNote.textContent = "ready";
-  }
 }
 
 function fillAudioTracks(audios, selected) {
