@@ -64,13 +64,15 @@ export function settings(env: Bindings): Settings {
     corsOrigins: list(env.CF_CORS_ORIGIN),
     recordsUrl: text(env.RECORDS_URL, "https://bstream.ssimo.dev"),
 
-    // Twelve is well past the point where the swarm, not the pool, is the limit: three seeders
-    // sustained 2 MiB/s in testing. The ceiling that matters is the six *connecting* sockets the
-    // platform allows, which `DialSlots` enforces separately.
-    maxPeers: int(env.MAX_PEERS, 12, 1, 32),
-    // Outstanding 16 KiB requests per peer. Sixteen was measured working against real peers;
-    // libtorrent advertises `reqq` of 250, so this is still conservative.
-    pipelineDepth: int(env.PIPELINE_DEPTH, 16, 1, 128),
+    // The ceiling that matters is the six *connecting* sockets the platform allows, which
+    // `DialSlots` enforces separately — an established socket does not count against it. So a
+    // larger pool is free, and on a thin swarm where most peers are choked or partial it is the
+    // difference between a stalled stream and a slow one.
+    maxPeers: int(env.MAX_PEERS, 24, 1, 64),
+    // Outstanding 16 KiB requests per peer, so 32 is 512 KiB in flight each. What a peer can give
+    // is bounded by bytes-in-flight over round-trip time, and these are transatlantic links —
+    // libtorrent advertises a `reqq` of 250, so this is still well inside what peers accept.
+    pipelineDepth: int(env.PIPELINE_DEPTH, 32, 1, 512),
     // One tick is one Durable Object request, and requests are what cap daily throughput, so a
     // larger budget is straightforwardly fewer of them. A Durable Object gets 30 s of CPU per
     // request — the notorious 10 ms is the plain-Worker figure and does not apply here.

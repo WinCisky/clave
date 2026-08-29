@@ -37,14 +37,17 @@ One full 263.5 MiB film, measured in production rather than estimated:
 | Meter | Per film | Free allowance | Films/day |
 | --- | --- | --- | --- |
 | Worker requests | 1 | 100,000/day | — |
-| **DO duration** | **12.3 GB-s** (96 s × 0.128) | **13,000 GB-s/day** | **~1,050** ← binding |
+| **DO duration** | **8-12 GB-s** (62-96 s × 0.128) | **13,000 GB-s/day** | **~1,000-1,600** ← binding |
 | DO requests | 70 = 1 upgrade + 67 alarms + 33 messages at 20:1 | 100,000/day | ~1,400 |
 | SQLite rows written | ~70 (one per alarm) | 100,000/day | ~1,400 |
 | Subrequests | 2 | 50/invocation | — |
 | `connect()` dials | ~120 | not a subrequest | 6 concurrent |
 | Bytes out | 263.5 MiB | — | free |
 
-That is **44 GB-s per GB delivered**. The predecessor (`../cf-stream`, which verified and stored
+That is **30-44 GB-s per GB delivered** — the range is throughput, and throughput on a public swarm
+varies by a factor of two between runs of the identical build, so treat any single figure with
+suspicion. Duration is billed on how long the download takes, so **going faster is directly cheaper**:
+the same film at 4.2 MiB/s instead of 2.7 costs a third less. The predecessor (`../cf-stream`, which verified and stored
 into R2) measured 145 GB-s/GB, so this is a 3.3× improvement — entirely from not hashing, not
 storing, and letting go of the sockets.
 
@@ -236,7 +239,9 @@ back to its default rather than throwing — a typo in one dashboard value shoul
 not take the Worker down. The defaults stay inside the free plan.
 
 The ones that actually move the numbers: `HOLD_MS` (how long a caught-up session keeps its sockets),
-`MAX_PEERS` and `PIPELINE_DEPTH` (throughput, and duration is inversely proportional to it),
+`MAX_PEERS` (24 — raising it is free on the dial budget, since the six-connection cap applies only
+while a socket is being established) and `PIPELINE_DEPTH` (32, i.e. 512 KiB in flight per peer;
+what a peer can give is bounded by bytes-in-flight over round-trip time),
 `CREDIT_WINDOW` (how far ahead the client lets us run), `MIN_ALARM_GAP_MS` (the floor that makes an
 expensive pump structurally impossible), `HEAD_BYTES` / `TAIL_DIVISOR` (time to first frame).
 
@@ -245,6 +250,14 @@ expensive pump structurally impossible), `HEAD_BYTES` / `TAIL_DIVISOR` (time to 
 Some of these are inherited from `../cf-stream`, whose comments record what they cost. The rest were
 found by the integration run in this repo — every one of them looked like "the swarm is slow".
 
+- **A failed dial must not wait on `socket.close()`.** Closing a socket that never finished
+  connecting takes around twenty seconds in workerd
+  ([cloudflare/workerd#2060](https://github.com/cloudflare/workerd/issues/2060)), so awaiting it
+  meant the *dial* did not settle until then — and a dead address held one of only **six** concurrent
+  connecting slots for twenty seconds instead of releasing at the 1.2 s connect deadline. Almost
+  every address on a public peer list is dead, so this one `await` *was* the cold start. Measured on
+  a real swarm: **0.84 dials/second before, 5.0 after**, and on a thin 13-peer swarm the difference
+  between one peer and five. Fire and forget it.
 - **A dial's signal becomes the peer's whole lifetime.** `PeerSession.dial` layers the connect and
   handshake deadlines on internally and then re-parents the surviving connection onto whatever
   signal it was handed. Passing `AbortSignal.timeout(setupMs)` there does not bound setup — it kills
@@ -258,6 +271,11 @@ found by the integration run in this repo — every one of them looked like "the
   session burned through its candidate list replacing peers that had been working.
 - **A leecher is not a slow seeder.** The measured swarm had a peer advertising 3 of 1055 pieces.
   Judge on the bitfield, immediately; waiting for a stall window holds a pool slot for nothing.
+- **Do not re-dispatch on every arriving block.** Topping up the request pipelines walks every open
+  assembly to rebuild the outstanding-block list, so doing it once per block makes receiving a block
+  cost time proportional to the whole window — time spent instead of reading the next block. Batch
+  the top-ups (half a pipeline's worth), and top up immediately when a piece completes, since that
+  frees a whole piece's slots at once.
 - **Deciding what to assemble is not deciding what to request.** Sorting open assemblies by piece
   index puts the tail window last — it has the highest indices in the file — so a non-faststart
   `moov` arrives when the film is nearly done. `Scheduler.priority` exists for this.

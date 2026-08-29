@@ -36,10 +36,12 @@
     // proportional to how long the download takes, not to how long the film runs. So these are
     // sized to finish fast and close, not to pace playback.
 
-    // Established peer sessions worth holding.
-    "MAX_PEERS": "12",
+    // Established peer sessions worth holding. Raising this costs nothing on the dial budget —
+    // the six-connection platform cap applies only while a socket is *being established* — and
+    // throughput is what duration is billed against, so more peers is straightforwardly cheaper.
+    "MAX_PEERS": "24",
     // Outstanding 16 KiB block requests per peer. Measured: 16 works; libtorrent queues far more.
-    "PIPELINE_DEPTH": "16",
+    "PIPELINE_DEPTH": "32",
     // Bytes parsed and forwarded in one alarm tick. Each tick is one Durable Object request with
     // its own 30 s CPU budget, so bigger ticks are straightforwardly fewer billed requests.
     "MAX_BYTES_PER_TICK": "16777216",

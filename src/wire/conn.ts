@@ -88,11 +88,16 @@ export class WireConn {
     try {
       await Promise.race([socket.opened, aborted]);
     } catch (err) {
-      try {
-        await socket.close();
-      } catch {
-        // Already failed; nothing to unwind.
-      }
+      // **Do not await this.** Closing a socket that never finished connecting can take around
+      // twenty seconds in workerd (cloudflare/workerd#2060), and awaiting it means the *dial* does
+      // not settle until then — so a dead address holds one of only six concurrent connecting slots
+      // for twenty seconds instead of releasing at the 1.2 s connect deadline.
+      //
+      // Measured against a real swarm: awaiting this capped dialling at 0.84 addresses per second,
+      // which on a list where roughly one address in seven answers is about one usable peer every
+      // eight seconds. Almost every address on a public peer list is dead, so this single `await`
+      // was the cold start.
+      void socket.close().catch(() => {});
       throw err instanceof WireError ? err : new WireError(describe(err));
     }
 
