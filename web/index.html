@@ -43,12 +43,28 @@
       </p>
       <div class="examples" id="examples"></div>
       <div class="message" id="magnet-message" hidden></div>
+
+      <!-- What is already on disk, across every torrent. Populated from OPFS, not from this
+           session — the whole point is that it survives a reload. -->
+      <div class="storage" id="storage" hidden>
+        <div class="storage-head">
+          <span id="storage-usage">—</span>
+          <button id="storage-refresh" type="button">Refresh</button>
+        </div>
+        <div class="stored" id="stored"></div>
+      </div>
     </div>
   </section>
   </div>
 
   <!-- Page 2: the file, and the video ------------------------------------------------------- -->
   <div id="page-watch" hidden>
+
+  <!-- Back lives at the top here: everything below is about one magnet, so leaving it reads the
+       same whether the download just started or finished an hour ago. -->
+  <div class="page-nav">
+    <button id="back">Back</button>
+  </div>
 
   <!-- Step 2 ---------------------------------------------------------------------------------- -->
   <section class="step" id="step-file" hidden>
@@ -93,6 +109,15 @@
 
       <div class="message" id="watch-message" hidden></div>
 
+      <!-- Above the stats it explains: the file it is about to hand over is the same file the
+           numbers below describe, and the reason it is greyed out is right there too. -->
+      <div class="save-row">
+        <button id="save" disabled>Save file</button>
+        <button id="reset" class="danger">Reset</button>
+        <span class="hint">Save is possible only once every piece has been verified — a partly
+          downloaded file will not open.</span>
+      </div>
+
       <dl class="stats">
         <div class="stat"><dt>Route</dt><dd id="w-route">—</dd></div>
         <div class="stat"><dt>Container</dt><dd id="w-container">—</dd></div>
@@ -126,12 +151,6 @@
 
       <div class="message" id="recover-message" hidden></div>
       <div class="log" id="log"></div>
-
-      <div class="row">
-        <button id="back">Back</button>
-        <!-- Only once every piece is verified: half a film saved is a file that will not open. -->
-        <button id="save" disabled>Save file</button>
-      </div>
     </div>
   </section>
   </div>

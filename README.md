@@ -271,6 +271,24 @@ straight copy and the full AC-3 → wasm decode → AAC encode path, and the Xvi
 **39 dB PSNR** against its source. Seeks land within 0.1 s of each other on video and audio across
 MP4, MKV, AVI and MPEG-PS. A video codec nothing here can decode is refused by name, with the reason.
 
+**And the stage after the muxer, which nothing used to cover.** `scripts/playback-check.mjs`
+(`npm run playback`) launches a Chromium of its own with a throwaway profile, drives it over the
+DevTools protocol, and asks the video element what it is really doing: `getVideoPlaybackQuality()`
+for dropped and corrupted frames, the mean luma of the element drawn to a canvas and of the
+compositor's own screencast for whether there is a picture at all, plus `currentTime`, `buffered`,
+`readyState` and the element's computed `display`. It plays `?local=` fixtures on all three routes,
+takes `--seek` to exercise the path a seek follows, and takes a magnet to run the real thing end to
+end. Measured over four minutes of Big Buck Bunny through the relay: **7525 frames, none dropped,
+none corrupted**, with eviction holding the buffer to a minute either side of the playhead.
+
+It proves its own instrument first. Under GPU compositing the decoded frames sit in an overlay that
+the protocol cannot see — `drawImage` returns black, `captureScreenshot` returns black, and a
+screencast is not even sent a new frame, because the *page* has not changed. So the harness plays an
+ordinary `<video src>` before anything else, and if that comes back black it reports the picture as
+unreadable instead of failing. Skipping that check produced one confident and entirely false
+diagnosis of an app whose picture was fine, which is why it is now the first thing the run does.
+`--gpu` opts into the real hardware path, where the frame counters are the only evidence there is.
+
 The same harness has a trickle mode that reveals pieces over time in the relay's own order — head
 window, tail window, then sequential — so a demuxer blocking on absent bytes and resuming is
 reproducible. A 150 s file produced **3750 frames, exact duration, no errors**, muxed faster than it
@@ -528,7 +546,7 @@ plausible segment counts and plausible byte totals, and only a real decoder disa
 - **A soundtrack nobody can decode does not stop the film.** TrueHD, DTS-HD MA and their kind have
   no decoder here and mediabunny does not even name them, so the track is dropped, the video plays,
   and the panel says which codec went and why. Saving the file keeps the original soundtrack.
-- **The picture was never watched moving.** In the automation the browser's document reports
+- **The picture was never watched moving.** *(Now it is — `npm run playback`, below.)* In the automation the browser's document reports
   `hidden`, so Chrome will not run a media element's playback clock. Everything up to that does now
   verify there: the handle attaches, the segments are accepted, `readyState` reaches
   `HAVE_ENOUGH_DATA`, the buffer holds the expected thirty seconds and `videoWidth`/`videoHeight`

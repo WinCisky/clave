@@ -37,6 +37,10 @@ const state = {
   bitmap: null,
   bits: null,
   memory: null, // in-memory fallback when OPFS is unavailable
+  dir: null, // this torrent's OPFS directory, kept for the metadata sidecar
+  infoHash: null,
+  magnet: "",
+  torrentName: "",
   chunks: null,
   fileEntry: null,
   hashes: null,
@@ -99,6 +103,8 @@ async function start(options) {
   state.chunks = options.chunks;
   state.fileEntry = options.file;
   state.hashes = options.hashes;
+  state.magnet = options.magnet ?? "";
+  state.torrentName = options.torrentName ?? "";
   state.firstPiece = options.file.firstPiece;
   state.lastPiece = options.file.lastPiece;
   state.pieceTotal = state.lastPiece - state.firstPiece + 1;
@@ -145,6 +151,20 @@ async function start(options) {
 
   socket.onopen = () => {
     post({ type: "open" });
+    // A resumed session's relay-side cursor remembers wherever it last was — including past any
+    // gap an earlier in-session seek left behind (scrubbing ahead during playback abandons whatever
+    // piece range it skipped over; see `ByteStore#steer` in `player/store.js`). Point the relay back
+    // at the true first gap so its sequential walk fills that in before continuing, rather than
+    // silently resuming past it until an eventual eof forces a NAK reconciliation. A no-op when
+    // there is nothing to correct: a fresh download has `resumed === 0`, and an ordinary sequential
+    // resume already has its first missing piece exactly at the relay's own cursor.
+    if (resumed > 0) {
+      const missing = firstMissingPiece();
+      if (missing !== -1) {
+        socket.send(client.seekPiece(missing));
+        post({ type: "resume_seek", piece: missing });
+      }
+    }
     // Grant generously. The Worker's cost model is billed on how long it holds peer sockets open,
     // so finishing early is cheaper than pacing delivery — and the buffer is ours, not its.
     grant(options.creditStart ?? 64);
@@ -424,6 +444,7 @@ async function onEof() {
 async function finish() {
   state.finished = true;
   await flush();
+  void writeMetaSidecar(); // refresh updatedAt, and the sidecar if `openStorage` never got to write it
   // The handles stay open. They used to be released here so the page could read the file back, but
   // playback and `save` both now read through this worker, and both outlive the download.
   post({
@@ -473,6 +494,7 @@ function progress() {
 async function openStorage(infoHash, fresh) {
   const bitmapBytes = Math.ceil(state.pieceTotal / 8);
   state.bits = new Uint8Array(bitmapBytes);
+  state.infoHash = infoHash;
 
   try {
     const root = await navigator.storage.getDirectory();
@@ -482,6 +504,7 @@ async function openStorage(infoHash, fresh) {
     if (fresh) {
       await dir.removeEntry(name).catch(() => {});
       await dir.removeEntry(`${name}.bitmap`).catch(() => {});
+      await dir.removeEntry(`${name}.meta.json`).catch(() => {});
     }
 
     const fileHandle = await dir.getFileHandle(name, { create: true });
@@ -497,6 +520,11 @@ async function openStorage(infoHash, fresh) {
       state.bitmap.truncate(bitmapBytes);
       state.bits.fill(0);
     }
+
+    state.dir = dir;
+    // Describes this directory for the storage panel on page 1 — a bitmap alone cannot say whose
+    // it is, and never blocks storage from opening: a failure here costs a nicer label, not data.
+    void writeMetaSidecar();
   } catch (err) {
     // No OPFS, or it refused. The grid still works; the file does not survive the tab.
     state.file = null;
@@ -536,6 +564,48 @@ function setBit(pieceIndex) {
   // Written back in batches by `flush`, and on a cadence, so a crash loses at most a few pieces of
   // *knowledge* — never data, since the bytes are already on disk.
   if (state.verified % 16 === 0) writeBitmap();
+}
+
+/** The earliest piece of this file not yet verified, or -1 if the file is complete. */
+function firstMissingPiece() {
+  for (let piece = state.firstPiece; piece <= state.lastPiece; piece++) {
+    if (!getBit(piece)) return piece;
+  }
+  return -1;
+}
+
+/**
+ * Describe this stored file for the page 1 storage panel.
+ *
+ * A normal writable stream, not a sync access handle: this is written once per session (plus a
+ * refresh on completion), never on the hot path, and a sync handle here would compete with the one
+ * `openStorage` already holds open on the video and the bitmap.
+ */
+async function writeMetaSidecar() {
+  if (state.dir === null) return;
+  const name = safeName(state.fileEntry.name);
+  try {
+    const handle = await state.dir.getFileHandle(`${name}.meta.json`, { create: true });
+    const writable = await handle.createWritable();
+    await writable.write(JSON.stringify({
+      v: 1,
+      infoHash: state.infoHash,
+      magnet: state.magnet,
+      torrentName: state.torrentName,
+      fileIndex: state.fileEntry.index,
+      fileName: state.fileEntry.name,
+      filePath: state.fileEntry.path ?? state.fileEntry.name,
+      fileLength: state.fileEntry.length,
+      pieceLength: state.chunks.pieceLength,
+      firstPiece: state.firstPiece,
+      lastPiece: state.lastPiece,
+      pieceTotal: state.pieceTotal,
+      updatedAt: Date.now(),
+    }));
+    await writable.close();
+  } catch {
+    // Best effort: losing the sidecar costs a nicer label on page 1, not data.
+  }
 }
 
 function writeBitmap() {

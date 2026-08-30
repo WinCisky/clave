@@ -10,7 +10,8 @@
     "test": "vitest run --max-workers=1 --no-isolate",
     "test:watch": "vitest --max-workers=1 --no-isolate",
     "types": "wrangler types",
-    "verify": "npm run typecheck && npm run test"
+    "verify": "npm run typecheck && npm run test",
+    "playback": "node scripts/playback-check.mjs"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.22.0",

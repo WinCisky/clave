@@ -185,6 +185,52 @@ details.others { margin-top: 12px; }
 details.others summary { cursor: pointer; color: var(--muted); font-size: 12px; }
 details.others .files { margin-top: 8px; }
 
+/* --- storage panel (page 1) --------------------------------------------------------------------- */
+
+.storage { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
+
+.storage-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  margin-bottom: 10px;
+}
+.storage-head span { color: var(--muted); font-size: 12px; }
+#storage-refresh { font-size: 12px; padding: 4px 9px; }
+
+.stored { display: flex; flex-direction: column; gap: 6px; }
+
+.stored-row {
+  display: flex; align-items: stretch; gap: 8px;
+}
+
+.stored-main {
+  flex: 1 1 auto;
+  display: flex; align-items: center; gap: 12px;
+  min-width: 0;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  cursor: pointer;
+  text-align: left;
+}
+.stored-main:hover { border-color: var(--accent); }
+.stored-main .name {
+  flex: 0 1 auto; font-weight: 600; font-size: 12px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.stored-main .file-name {
+  flex: 1 1 auto; min-width: 0; font-family: var(--mono); font-size: 12px; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.stored-main .meta {
+  flex: 0 0 auto; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums;
+}
+.stored-main .tag {
+  flex: 0 0 auto; font-size: 11px; padding: 2px 7px; border-radius: 999px;
+  background: color-mix(in srgb, var(--cell-3) 18%, transparent); color: var(--cell-3);
+}
+.stored-delete { flex: 0 0 auto; font-size: 12px; padding: 9px 12px; }
+
 /* --- stats ------------------------------------------------------------------------------------ */
 
 .stats {
@@ -335,3 +381,13 @@ progress::-moz-progress-bar { background: var(--cell-3); }
 
 /* A route that needed work is worth noticing; a plain copy is not. */
 .route-transcode-audio, .route-legacy { color: var(--warn); }
+
+/* --- page 2 layout: back at the top, save/reset above the stats they describe --------------------- */
+
+.page-nav { margin-bottom: 16px; }
+
+.save-row {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.save-row .hint { flex: 1 1 220px; margin: 0; }

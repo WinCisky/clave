@@ -7,6 +7,7 @@
 
 import { CONFIG } from "./config.js";
 import { languageLabel } from "./player/language.js";
+import { deleteStored, estimateUsage, listStored } from "./storage.js";
 import {
   decodePieceHashes,
   describeFiles,
@@ -14,6 +15,7 @@ import {
   formatDuration,
   parseMagnet,
   pieceRangeOfFile,
+  safeName,
 } from "./torrent.js";
 
 /**
@@ -39,12 +41,17 @@ const el = {
   steps: { magnet: $("step-magnet"), file: $("step-file"), recover: $("step-recover") },
   back: $("back"),
   save: $("save"),
+  reset: $("reset"),
   clear: $("clear"),
   magnet: $("magnet"),
   resolve: $("resolve"),
   examples: $("examples"),
   magnetMessage: $("magnet-message"),
   magnetNote: $("magnet-note"),
+  storage: $("storage"),
+  storageUsage: $("storage-usage"),
+  storageRefresh: $("storage-refresh"),
+  stored: $("stored"),
   videos: $("videos"),
   others: $("others"),
   othersWrap: $("others-wrap"),
@@ -180,7 +187,7 @@ function adopt(infoHash, body) {
   message(el.magnetMessage, peers === 0 ? "warn" : null, peers === 0
     ? "Resolved, but the relay knows of no peers right now. The download may not start."
     : null);
-  show("watch");
+  navigate("watch");
   chooseFile();
 }
 
@@ -189,22 +196,52 @@ function show(page) {
   el.pages.magnet.hidden = page !== "magnet";
   el.pages.watch.hidden = page !== "watch";
   window.scrollTo({ top: 0 });
+  if (page === "magnet") void refreshStorage();
 }
 
 /**
- * Back to the magnet, and put everything down on the way.
+ * Move to a page and leave a mark in history, so the browser's own Back button can return here.
  *
- * A reload would be simpler and would also throw away whatever the viewer typed. This tears the
- * session down instead: the worker is terminated, which is what releases the exclusive lock on the
- * stored file — without that, `Clear storage` on the first page would find the file busy and fail.
+ * Two pages, two history entries — resolving a magnet is what pushes the second one, and popping it
+ * is exactly the "I want a different magnet" gesture the viewer already knows.
  */
-function goBack() {
+function navigate(page) {
+  history.pushState({ page }, "", page === "watch" ? "#watch" : location.pathname + location.search);
+  show(page);
+}
+
+// The magnet page's own entry, replacing whatever hash a reload left behind — a `#watch` surviving
+// a refresh would otherwise leave the history state out of sync with the page, which starts on
+// the magnet form regardless (see the `hidden` attributes in the HTML).
+history.replaceState({ page: "magnet" }, "", location.pathname + location.search);
+
+window.addEventListener("popstate", (event) => {
+  const page = event.state?.page ?? "magnet";
+  // Forward again after the session was torn down: there is nothing left to show. Bounce back
+  // rather than paint a dead page-two.
+  if (page === "watch" && session.worker === null) {
+    show("magnet");
+    history.replaceState({ page: "magnet" }, "", location.pathname + location.search);
+    return;
+  }
+  if (page === "magnet") goBack();
+  show(page);
+});
+
+/**
+ * Put down whatever is running: the worker, the player, and everything painted for it.
+ *
+ * Shared by leaving the page, switching to a different file, and resetting the current one — none
+ * of which touch `session.infoHash` / `chunks` / `hashes` / `files`, since those describe the
+ * torrent rather than one run at it. Terminating the worker is what releases the exclusive lock on
+ * the stored file — without that, deleting it right afterwards would find the file busy and fail.
+ */
+function teardownSession() {
   session.worker?.postMessage({ type: "stop" });
   session.worker?.terminate();
   session.worker = null;
   session.running = false;
   session.watching = false;
-  session.chosen = null;
   session.encode = null;
   session.duration = null;
   session.lastPlayhead = -1;
@@ -228,20 +265,43 @@ function goBack() {
   for (const node of [el.recoverMessage, el.watchMessage, el.fileMessage]) message(node, null);
   for (const node of Object.values(el.watchStat)) node.textContent = "—";
   for (const node of Object.values(el.stat)) node.textContent = "—";
-  el.steps.file.hidden = true;
-  el.steps.recover.hidden = true;
   el.steps.recover.classList.remove("active", "done");
-
-  show("magnet");
 }
 
-el.back.onclick = goBack;
+/** Back to the magnet page: tear the session down entirely, including which file was chosen. */
+function goBack() {
+  teardownSession();
+  session.chosen = null;
+  el.steps.file.hidden = true;
+  el.steps.recover.hidden = true;
+}
+
+el.back.onclick = () => history.back();
 
 el.save.onclick = () => {
   if (session.worker === null) return;
   el.save.disabled = true;
   session.worker.postMessage({ type: "save" });
 };
+
+el.reset.onclick = () => void resetDownload();
+
+/** Wipe this file's stored pieces and start it again from nothing. */
+async function resetDownload() {
+  if (session.chosen === null) return;
+  const infoHash = session.infoHash;
+  const file = session.chosen;
+  teardownSession();
+  try {
+    await deleteStored(infoHash, safeName(file.name));
+  } catch (err) {
+    log(`reset: could not delete stored data: ${describe(err)}`, true);
+  }
+  // A cleared client and a relay that still thinks it has sent everything disagree; start fresh.
+  session.nonce = Date.now();
+  session.chosen = file;
+  prepareGrid(file);
+}
 
 /**
  * Throw away everything this page has stored, for every torrent.
@@ -269,10 +329,102 @@ async function clearStorage() {
     message(el.magnetMessage, "error", `Could not clear storage: ${describe(err)}`);
   } finally {
     el.clear.disabled = false;
+    await refreshStorage();
   }
 }
 
 el.clear.onclick = () => void clearStorage();
+
+// -------------------------------------------------------------------------------------------------
+// The storage panel — everything on disk, across every torrent
+
+/** Repaint the usage line and the stored-file list from OPFS. */
+async function refreshStorage() {
+  try {
+    const [usage, items] = await Promise.all([estimateUsage(), listStored()]);
+    renderStorage(usage, items);
+  } catch {
+    // No OPFS, or it refused to enumerate. The rest of the page still works without it.
+    el.storage.hidden = true;
+  }
+}
+
+function renderStorage(usage, items) {
+  el.storage.hidden = items.length === 0 && usage.usage === 0;
+  const count = items.length;
+  el.storageUsage.textContent = usage.quota > 0
+    ? `${formatBytes(usage.usage)} stored of ${formatBytes(usage.quota)} available · ${count} file${count === 1 ? "" : "s"}`
+    : `${formatBytes(usage.usage)} stored · ${count} file${count === 1 ? "" : "s"}`;
+
+  el.stored.replaceChildren();
+  for (const item of items) el.stored.append(storedRow(item));
+}
+
+function storedRow(item) {
+  const row = document.createElement("div");
+  row.className = "stored-row";
+
+  const main = document.createElement("button");
+  main.type = "button";
+  main.className = "stored-main";
+  main.title = "Resume this download";
+
+  const name = document.createElement("span");
+  name.className = "name";
+  name.textContent = item.torrentName || item.infoHash;
+
+  const file = document.createElement("span");
+  file.className = "file-name";
+  file.textContent = item.filePath ?? item.fileName;
+
+  const meta = document.createElement("span");
+  meta.className = "meta";
+  meta.textContent = item.fileLength === null
+    ? "size unknown"
+    : item.bytesStored === null
+      ? formatBytes(item.fileLength)
+      : `${formatBytes(item.bytesStored)} of ${formatBytes(item.fileLength)}`;
+
+  const status = document.createElement("span");
+  status.className = "tag";
+  status.textContent = item.complete
+    ? "complete"
+    : item.pieceTotal === null || item.verified === null
+      ? "unknown"
+      : `${Math.floor((item.verified / item.pieceTotal) * 100)}%`;
+
+  main.append(name, file, meta, status);
+  main.onclick = () => resumeStored(item);
+
+  const del = document.createElement("button");
+  del.type = "button";
+  del.className = "danger stored-delete";
+  del.textContent = "Delete";
+  del.setAttribute("aria-label", `Delete ${item.filePath ?? item.fileName}`);
+  del.onclick = () => void removeStored(item);
+
+  row.append(main, del);
+  return row;
+}
+
+/** Fill the magnet field from what the sidecar remembered and resolve it, same as pasting it in. */
+function resumeStored(item) {
+  el.magnet.value = item.magnet || item.infoHash;
+  message(el.magnetMessage, null);
+  void resolve();
+}
+
+async function removeStored(item) {
+  try {
+    await deleteStored(item.infoHash, item.fileName);
+    await refreshStorage();
+  } catch (err) {
+    message(el.magnetMessage, "error", `Could not delete: ${describe(err)}`);
+  }
+}
+
+el.storageRefresh.onclick = () => void refreshStorage();
+void refreshStorage();
 
 // -------------------------------------------------------------------------------------------------
 // Step 2 — which file
@@ -346,7 +498,18 @@ function fileButton(file, prominent) {
   return button;
 }
 
+/**
+ * Choose a file, including changing your mind about one already running.
+ *
+ * The chooser used to lock itself the moment a download started, on the theory that a second click
+ * would repaint the grid for one file while the relay kept streaming another. It now just tears the
+ * old run down first — same thing `Back` and `Reset` already do — so switching files is a single
+ * click rather than a trip back to the magnet page and a re-resolve.
+ */
 function pick(file) {
+  if (session.chosen !== null && session.chosen.index === file.index && session.worker !== null) return;
+  if (session.worker !== null) teardownSession();
+
   session.chosen = file;
   for (const button of document.querySelectorAll(".file")) {
     button.setAttribute("aria-pressed", String(button.dataset.index === String(file.index)));
@@ -425,10 +588,6 @@ function start() {
   session.running = true;
   message(el.recoverMessage, null);
 
-  // Picking a file now starts it, so the chooser has to close behind itself: a second click would
-  // otherwise repaint the grid for one file while the relay carried on streaming another. Changing
-  // your mind means starting over, which is what the button in step 1 is for.
-  for (const button of document.querySelectorAll(".file")) button.disabled = true;
 
   const worker = new Worker(new URL("./stream-worker.js", import.meta.url), { type: "module" });
   session.worker = worker;
@@ -446,6 +605,8 @@ function start() {
       ? `${session.infoHash}-${session.chosen.index}-${session.nonce ?? Date.now()}`
       : `${session.infoHash}-${session.chosen.index}`,
     infoHash: session.infoHash,
+    magnet: el.magnet.value.trim(),
+    torrentName: session.chunks.name,
     chunks: session.chunks,
     file: session.chosen,
     hashes: session.hashes,
@@ -514,6 +675,9 @@ function onWorkerMessage(message_) {
       break;
     case "open":
       log("connected to the relay");
+      break;
+    case "resume_seek":
+      log(`resuming: seeking relay to first missing piece ${message_.piece}`);
       break;
     case "ready":
       log(`relay ready: pieces ${message_.ready.firstPiece}–${message_.ready.lastPiece}`);
