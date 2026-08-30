@@ -12,7 +12,11 @@
  */
 
 /** The generated `Env` plus anything `wrangler types` cannot see. */
-export interface Bindings extends Env {}
+export interface Bindings extends Env {
+  /** Secret, set with `wrangler secret put PROBE_TOKEN` — never declared in `wrangler.jsonc`, so
+   * `wrangler types` has no way to generate it. */
+  readonly PROBE_TOKEN?: string;
+}
 
 export interface Settings {
   readonly corsOrigins: readonly string[];
@@ -41,6 +45,13 @@ export interface Settings {
   readonly connectTimeoutMs: number;
   readonly handshakeTimeoutMs: number;
   readonly refreshCooldownMs: number;
+
+  /** Empty disables probing entirely — every code path below degrades to today's behaviour. */
+  readonly probeUrl: string;
+  readonly probeToken: string;
+  readonly probeTimeoutMs: number;
+  readonly probeBatch: number;
+  readonly probeNeed: number;
 }
 
 function int(raw: unknown, fallback: number, min: number, max: number): number {
@@ -118,6 +129,21 @@ export function settings(env: Bindings): Settings {
     connectTimeoutMs: int(env.CONNECT_TIMEOUT_MS, 1_200, 200, 10_000),
     handshakeTimeoutMs: int(env.HANDSHAKE_TIMEOUT_MS, 3_500, 500, 20_000),
     refreshCooldownMs: int(env.REFRESH_COOLDOWN_MS, 60_000, 5_000, 3_600_000),
+
+    // `probe/` (a Deno Deploy service, see its README) dials a whole peer list at once, which a
+    // Worker structurally cannot do — Cloudflare allows only six *connecting* sockets. Empty means
+    // the feature is off: every caller of `probePeers` treats that as "nothing to do" rather than
+    // an error, so an unset or unreachable probe leaves behaviour exactly as it is today.
+    probeUrl: text(env.PROBE_URL, ""),
+    // A secret, not a var — set with `wrangler secret put PROBE_TOKEN`, never in wrangler.jsonc.
+    probeToken: text(env.PROBE_TOKEN, ""),
+    probeTimeoutMs: int(env.PROBE_TIMEOUT_MS, 4_000, 500, 15_000),
+    // How many of the top-ranked (already `isRoutable`- and ban-filtered) candidates to hand the
+    // probe. Larger costs the probe more dials, not the Worker anything.
+    probeBatch: int(env.PROBE_BATCH, 120, 1, 512),
+    // Ask the probe to stop early once it has found this many useful peers, so the response comes
+    // back fast rather than after a full sweep of `probeBatch` addresses.
+    probeNeed: int(env.PROBE_NEED, 12, 1, 64),
   };
 }
 

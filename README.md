@@ -74,6 +74,7 @@ inline instead of arming anything.
 browser ──GET /records/<ih>──────────────► bstream        (client fetches the hashes itself)
         └─WS /stream?ih=…&file=N─► Worker router ─► DO Session
                                      (no bytes)     ├─ fetch /records        1 subrequest
+                                                    ├─ fetch /probe ──────► probe (Deno Deploy, optional)
                                                     └─ connect() × N ─► peers
 ```
 
@@ -90,6 +91,27 @@ browser ──GET /records/<ih>──────────────► bst
 Workers have no UDP, so DHT and `udp://` trackers are impossible. `bstream.ssimo.dev` (a Deno
 service on a VPS, `../bstream`) does that part and returns the layout plus a ranked peer list in one
 48 KB response. This is not a convenience — it is what makes the project possible.
+
+### `probe/`: dialling around the six-socket cap
+
+`connect()` in a Worker allows only **six concurrent connecting sockets** — a Cloudflare platform
+cap, not a tuning knob (`MAX_CONNECTING` in `src/session.ts`) — and a refused connect still spends
+one while it fails. On a fresh, unranked peer list only ~14% of addresses answer (see the ranking
+table below), so landing six working peers costs roughly 40 dials: that sequence *is* the cold
+start. `rankPeers` already improves this with bstream's historical health data, but that evidence
+can be minutes or hours old.
+
+`probe/` (`./probe/README.md`) is a companion Deno Deploy service with no such cap. `session.ts`
+hands it the top of its ranked candidate list; it dials all of them in parallel, completes the
+BitTorrent handshake, and reports back — in about a second — which addresses are alive right now
+and hold the pieces the stream needs first. Measured against the live swarm for the sample torrent:
+220 peers in, 36 dialled before 12 useful ones were confirmed, 628ms. The Worker's six slots then
+dial almost entirely winners instead of guessing.
+
+It is strictly an optimisation. `PROBE_URL` unset, or the service down, slow, or wrong, changes
+nothing about correctness — `session.ts`'s `#kickOffProbe` is fire-and-forget and dials on the
+ranked list regardless; a probe response only ever promotes candidates already in that list ahead
+of schedule.
 
 ### Ordering
 
@@ -126,7 +148,7 @@ than infer it from the frame.
 
 ```bash
 npm install
-npm run verify          # typecheck + 242 tests, inside workerd
+npm run verify          # typecheck + 272 tests, inside workerd
 npx wrangler dev
 
 # the whole file, hash-checked, written to disk
@@ -530,9 +552,9 @@ plausible segment counts and plausible byte totals, and only a real decoder disa
 - **No MSE/PE encryption.** 8 of 8 handshakes against the live swarm succeeded in the clear, and
   encryption is off by default in the widely deployed clients, so a plaintext client reaches most of
   a public swarm — but not a swarm that mandates obfuscation.
-- **Good peers are not remembered across sessions.** The addresses that worked are reported to
-  bstream but not cached locally, so a cold start re-derives them. This is the obvious next
-  cold-start win.
+- **`probe/` is not deployed yet.** `session.ts`'s `#kickOffProbe` and the request/response
+  plumbing exist and are tested, but until `PROBE_URL`/`PROBE_TOKEN` point at a real deployment the
+  feature is a no-op and dialling runs exactly as it does without it. See `probe/README.md`.
 - **BitTorrent v2 / hybrid torrents** are not handled; v1 SHA-1 pieces only.
 - **Styled subtitles (ASS/SSA) are listed but not rendered**, and neither are bitmap ones (PGS,
   VobSub). Text tracks are also read only from Matroska, which is where they actually live in

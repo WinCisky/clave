@@ -86,6 +86,23 @@
     "CONNECT_TIMEOUT_MS": "1200",
     "HANDSHAKE_TIMEOUT_MS": "3500",
     // Ask bstream for a fresh swarm no more often than this.
-    "REFRESH_COOLDOWN_MS": "60000"
+    "REFRESH_COOLDOWN_MS": "60000",
+
+    // --- peer probe (optional) --------------------------------------------------------------
+    // `probe/` is a companion Deno Deploy service (see its README) that dials a whole peer list
+    // in parallel, which this Worker structurally cannot do — Cloudflare allows only six
+    // *connecting* sockets at once. Empty disables the feature entirely: `#kickOffProbe` in
+    // `src/session.ts` is a no-op and dialling behaves exactly as it does without this section.
+    "PROBE_URL": "",
+    // How long the Worker waits on one probe response before giving up on it. The probe itself is
+    // asked to return within its own `budgetMs`, so this is a courtesy ceiling, not the real clock.
+    "PROBE_TIMEOUT_MS": "4000",
+    // How many of the top-ranked candidates (already filtered by `isRoutable` and by ban lists) to
+    // send. Larger costs the probe service more dials, not this Worker anything.
+    "PROBE_BATCH": "120",
+    // Ask the probe to return as soon as it has found this many useful peers, rather than after a
+    // full sweep of PROBE_BATCH addresses.
+    "PROBE_NEED": "12"
+    // PROBE_TOKEN is a secret, not a var: `wrangler secret put PROBE_TOKEN`.
   }
 }

@@ -57,6 +57,7 @@ import { nextAction, Scheduler, type SchedulerSnapshot } from "./schedule.ts";
 import { DialSlots } from "./swarm/dials.ts";
 import { PeerBlame, shouldRefreshSwarm, starvedPeers } from "./swarm/health.ts";
 import { PeerSession } from "./swarm/peer.ts";
+import { probePeers } from "./swarm/probe.ts";
 import { generatePeerId } from "./wire/handshake.ts";
 import { fromHex } from "./bytes.ts";
 import {
@@ -135,6 +136,16 @@ export class Session extends DurableObject<Bindings> {
   #failureStreak = 0;
   readonly #deadPeers = new Set<string>();
   readonly #goodPeers = new Set<string>();
+  /**
+   * Addresses `probe/` reported unreachable, kept separate from `#deadPeers`.
+   *
+   * `#deadPeers` is first-party evidence — this Worker actually tried the dial — and
+   * `#reportHealth` posts it to bstream as `fail`. What the probe service saw is second-hand and
+   * must not contaminate a table whose entire value is that every entry was independently
+   * measured. It still gates `#dial`, same as `#deadPeers`; it is just never reported.
+   */
+  readonly #probeDead = new Set<string>();
+  #probeInFlight = false;
   /** How many times a peer has been requeued after going quiet. Bounded, so it cannot cycle. */
   readonly #silent = new Map<string, number>();
 
@@ -672,7 +683,10 @@ export class Session extends DurableObject<Bindings> {
     while (room > 0 && this.#candidates.length > 0) {
       const candidate = this.#candidates.shift()!;
       const key = peerKey(candidate.ip, candidate.port);
-      if (this.#peers.has(key) || this.#deadPeers.has(key) || this.#blame.banned(key)) continue;
+      if (
+        this.#peers.has(key) || this.#deadPeers.has(key) || this.#probeDead.has(key) ||
+        this.#blame.banned(key)
+      ) continue;
 
       const slot = this.#dialSlots.open(Date.now());
       room -= 1;
@@ -980,6 +994,77 @@ export class Session extends DurableObject<Bindings> {
     for (const peer of ranked) {
       if (!known.has(peerKey(peer.ip, peer.port))) this.#candidates.push(peer);
     }
+    this.#kickOffProbe();
+  }
+
+  /**
+   * Ask `probe/` (see `../probe/README.md`) to dial the top of `#candidates` in parallel — 512
+   * addresses at once from a runtime with no six-socket cap — and promote whatever comes back
+   * alive before this Worker's own `#dial` has to guess.
+   *
+   * Strictly an upgrade, never a dependency: dialling proceeds immediately on today's ranked list
+   * regardless, and this is `void`d at the call site. `probePeers` (`./swarm/probe.ts`) already
+   * swallows every failure and returns an empty outcome, so a disabled, unreachable, or slow probe
+   * changes nothing about correctness.
+   */
+  #kickOffProbe(): void {
+    const { probeUrl, probeToken } = this.#config;
+    if (probeUrl === "" || probeToken === "" || this.#probeInFlight) return;
+    const layout = this.#layout;
+    if (layout === null || this.#candidates.length === 0) return;
+
+    const era = this.#era;
+    const targets = this.#candidates
+      .slice(0, this.#config.probeBatch)
+      .map((peer) => ({ ip: peer.ip, port: peer.port }));
+    const want = this.#bootstrapPieces();
+    // Leave the Deno service room to answer inside its own deadline before this Worker's fetch
+    // gives up on it; otherwise a slow network hop, not a slow sweep, is what times it out.
+    const budgetMs = Math.max(500, this.#config.probeTimeoutMs - 500);
+
+    this.#probeInFlight = true;
+    probePeers({
+      baseUrl: probeUrl,
+      token: probeToken,
+      infoHash: layout.id,
+      peers: targets,
+      pieceCount: layout.pieceCount,
+      want,
+      need: this.#config.probeNeed,
+      budgetMs,
+      timeoutMs: this.#config.probeTimeoutMs,
+      signal: era.signal,
+    }).then((outcome) => {
+      this.#probeInFlight = false;
+      // The era that asked may already be gone — a reconnect tore the pool down and started a new
+      // one — in which case this answer is about sockets nobody is going to open.
+      if (era.signal.aborted || this.#closing) return;
+      for (const key of outcome.dead) this.#probeDead.add(key);
+      // Two calls, deliberately: the first promotes confirmed-useful peers to the very front, the
+      // second promotes merely-alive-but-unproven ones next — `#promoteGoodPeers` only ever moves
+      // things forward, so a peer already placed by the first call stays ahead of the second's.
+      this.#promoteGoodPeers(outcome.useful);
+      this.#promoteGoodPeers(outcome.alive);
+      this.#dial();
+    }).catch((err) => {
+      // `probePeers` does not throw in normal operation; this is insurance against a bug in it,
+      // not an expected path.
+      this.#probeInFlight = false;
+      console.error("probe kickoff failed", { error: describe(err) });
+    });
+  }
+
+  /**
+   * A handful of piece indices worth asking the probe about: the head and tail bootstrap window
+   * every scheduler starts with. `#store.keys()` is not usable here — a probe fires from
+   * `#adoptRecords`, before the scheduler exists to have opened anything.
+   */
+  #bootstrapPieces(): number[] {
+    const init = this.#schedulerInit();
+    const want = new Set<number>();
+    for (let i = init.head.first; i <= init.head.last && want.size < 4; i++) want.add(i);
+    for (let i = init.tail.last; i >= init.tail.first && want.size < 8; i--) want.add(i);
+    return [...want];
   }
 
   #schedulerInit() {
