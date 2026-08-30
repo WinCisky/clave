@@ -67,12 +67,30 @@ describe("parseProbeResponse", () => {
   });
 
   it("treats missing alive/dead arrays as empty rather than throwing", () => {
-    expect(parseProbeResponse({})).toEqual({ useful: [], alive: [], dead: [] });
+    expect(parseProbeResponse({})).toEqual({ useful: [], alive: [], dead: [], probed: 0, truncated: false });
   });
 
   it("rejects a response that is not an object", () => {
     expect(() => parseProbeResponse(null)).toThrow();
     expect(() => parseProbeResponse([1, 2, 3])).toThrow();
+  });
+
+  it("carries probed and truncated through, falling back to alive+dead length if probed is missing", () => {
+    const withCounts = parseProbeResponse({
+      alive: [{ ip: "1.1.1.1", port: 1, hasWanted: true }],
+      dead: [{ ip: "2.2.2.2", port: 2 }],
+      probed: 34,
+      truncated: true,
+    });
+    expect(withCounts.probed).toBe(34);
+    expect(withCounts.truncated).toBe(true);
+
+    const withoutCounts = parseProbeResponse({
+      alive: [{ ip: "1.1.1.1", port: 1, hasWanted: true }],
+      dead: [{ ip: "2.2.2.2", port: 2 }],
+    });
+    expect(withoutCounts.probed).toBe(2); // 1 alive + 1 dead
+    expect(withoutCounts.truncated).toBe(false);
   });
 });
 
@@ -80,21 +98,21 @@ describe("probePeers", () => {
   it("is a no-op when the probe is not configured", async () => {
     const fetchImpl = okResponse({ alive: [], dead: [] });
     const outcome = await probePeers({ ...baseRequest, baseUrl: "", fetchImpl });
-    expect(outcome).toEqual({ useful: [], alive: [], dead: [] });
+    expect(outcome).toEqual({ useful: [], alive: [], dead: [], probed: 0, truncated: false });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it("is a no-op when there is no token, even with a configured url", async () => {
     const fetchImpl = okResponse({ alive: [], dead: [] });
     const outcome = await probePeers({ ...baseRequest, token: "", fetchImpl });
-    expect(outcome).toEqual({ useful: [], alive: [], dead: [] });
+    expect(outcome).toEqual({ useful: [], alive: [], dead: [], probed: 0, truncated: false });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it("is a no-op when there are no candidate peers, saving the round trip entirely", async () => {
     const fetchImpl = okResponse({ alive: [], dead: [] });
     const outcome = await probePeers({ ...baseRequest, peers: [], fetchImpl });
-    expect(outcome).toEqual({ useful: [], alive: [], dead: [] });
+    expect(outcome).toEqual({ useful: [], alive: [], dead: [], probed: 0, truncated: false });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
@@ -133,29 +151,57 @@ describe("probePeers", () => {
     expect(outcome.dead).toEqual(["9.9.9.9:1"]);
   });
 
-  it("degrades to an empty outcome, not a throw, on a non-2xx status", async () => {
+  it("degrades to an empty outcome, not a throw, on a non-2xx status — with a note saying why", async () => {
     const fetchImpl = okResponse({ error: "unauthorized" }, 401);
     const outcome = await probePeers({ ...baseRequest, fetchImpl });
-    expect(outcome).toEqual({ useful: [], alive: [], dead: [] });
+    expect(outcome).toEqual({
+      useful: [],
+      alive: [],
+      dead: [],
+      probed: 0,
+      truncated: false,
+      note: "status 401",
+    });
   });
 
-  it("degrades to an empty outcome on unparseable JSON", async () => {
+  it("degrades to an empty outcome on unparseable JSON — with a note saying why", async () => {
     const fetchImpl = vi.fn(async () => new Response("not json", { status: 200 }));
     const outcome = await probePeers({ ...baseRequest, fetchImpl });
-    expect(outcome).toEqual({ useful: [], alive: [], dead: [] });
+    expect(outcome).toEqual({
+      useful: [],
+      alive: [],
+      dead: [],
+      probed: 0,
+      truncated: false,
+      note: "unparseable JSON",
+    });
   });
 
-  it("degrades to an empty outcome on a malformed but well-formed-JSON body", async () => {
+  it("degrades to an empty outcome on a malformed but well-formed-JSON body — with a note saying why", async () => {
     const fetchImpl = okResponse("just a string, not an object");
     const outcome = await probePeers({ ...baseRequest, fetchImpl });
-    expect(outcome).toEqual({ useful: [], alive: [], dead: [] });
+    expect(outcome).toEqual({
+      useful: [],
+      alive: [],
+      dead: [],
+      probed: 0,
+      truncated: false,
+      note: "malformed response: response is not an object",
+    });
   });
 
-  it("degrades to an empty outcome when the fetch itself rejects (network error, timeout)", async () => {
+  it("degrades to an empty outcome when the fetch itself rejects (network error, timeout) — with a note saying why", async () => {
     const fetchImpl = vi.fn(async () => {
       throw new Error("network unreachable");
     });
     const outcome = await probePeers({ ...baseRequest, fetchImpl });
-    expect(outcome).toEqual({ useful: [], alive: [], dead: [] });
+    expect(outcome).toEqual({
+      useful: [],
+      alive: [],
+      dead: [],
+      probed: 0,
+      truncated: false,
+      note: "fetch failed: network unreachable",
+    });
   });
 });

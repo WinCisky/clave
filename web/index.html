@@ -35,7 +35,6 @@
       <textarea id="magnet" spellcheck="false" placeholder="magnet:?xt=urn:btih:…"></textarea>
       <div class="row">
         <button class="primary" id="resolve">Resolve</button>
-        <button id="clear" class="danger">Clear storage</button>
       </div>
       <p class="hint">
         A magnet the relay has not seen before is resolved first, which walks the swarm for its
@@ -45,13 +44,17 @@
       <div class="message" id="magnet-message" hidden></div>
 
       <!-- What is already on disk, across every torrent. Populated from OPFS, not from this
-           session — the whole point is that it survives a reload. -->
+           session — the whole point is that it survives a reload. Also gates Clear storage: with
+           nothing on disk there is nothing for it to do. -->
       <div class="storage" id="storage" hidden>
         <div class="storage-head">
           <span id="storage-usage">—</span>
           <button id="storage-refresh" type="button">Refresh</button>
         </div>
         <div class="stored" id="stored"></div>
+        <div class="storage-foot">
+          <button id="clear" class="danger">Clear storage</button>
+        </div>
       </div>
     </div>
   </section>
@@ -63,7 +66,13 @@
   <!-- Back lives at the top here: everything below is about one magnet, so leaving it reads the
        same whether the download just started or finished an hour ago. -->
   <div class="page-nav">
-    <button id="back">Back</button>
+    <button id="back">
+      <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+        <path d="M10 3 5 8l5 5" fill="none" stroke="currentColor"
+              stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      Back
+    </button>
   </div>
 
   <!-- Step 2 ---------------------------------------------------------------------------------- -->
@@ -98,8 +107,6 @@
     <div class="body">
       <div class="player">
         <video id="video" controls playsinline></video>
-        <div class="strip" id="strip" role="img"
-             aria-label="Which parts of the file have been downloaded"></div>
       </div>
 
       <div class="tracks" id="tracks" hidden>
@@ -109,14 +116,22 @@
 
       <div class="message" id="watch-message" hidden></div>
 
-      <!-- Above the stats it explains: the file it is about to hand over is the same file the
-           numbers below describe, and the reason it is greyed out is right there too. -->
-      <div class="save-row">
-        <button id="save" disabled>Save file</button>
-        <button id="reset" class="danger">Reset</button>
-        <span class="hint">Save is possible only once every piece has been verified — a partly
-          downloaded file will not open.</span>
+      <div class="grid-wrap">
+        <div class="grid" id="grid" role="img" aria-label="Recovered pieces"></div>
       </div>
+      <div class="legend">
+        <span><i style="background:var(--cell-0);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--text) 6%,transparent)"></i> not yet</span>
+        <span><i style="background:var(--cell-inflight)"></i> in flight</span>
+        <span><i style="background:var(--cell-2)"></i> verified</span>
+        <span><i style="background:var(--cell-4)"></i> verified (bootstrap: head &amp; tail first)</span>
+        <span><i style="background:var(--cell-bad)"></i> failed SHA-1, re-fetching</span>
+      </div>
+
+      <div class="save-row">
+        <button id="save" class="primary" disabled>Save file</button>
+        <button id="reset" class="danger">Reset</button>
+      </div>
+      <p class="hint save-hint">Save is possible only once every piece has been verified.</p>
 
       <dl class="stats">
         <div class="stat"><dt>Route</dt><dd id="w-route">—</dd></div>
@@ -135,19 +150,6 @@
         <div class="stat"><dt>Re-fetched</dt><dd id="s-naks">0</dd></div>
         <div class="stat"><dt>Epoch</dt><dd id="s-epoch">0</dd></div>
       </dl>
-
-      <progress id="bar" value="0" max="1"></progress>
-
-      <div class="grid-wrap">
-        <div class="grid" id="grid" role="img" aria-label="Recovered pieces"></div>
-      </div>
-      <div class="legend">
-        <span><i style="background:var(--cell-0);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--text) 6%,transparent)"></i> not yet</span>
-        <span><i style="background:var(--cell-inflight)"></i> in flight</span>
-        <span><i style="background:var(--cell-2)"></i> verified</span>
-        <span><i style="background:var(--cell-4)"></i> verified (bootstrap: head &amp; tail first)</span>
-        <span><i style="background:var(--cell-bad)"></i> failed SHA-1, re-fetching</span>
-      </div>
 
       <div class="message" id="recover-message" hidden></div>
       <div class="log" id="log"></div>

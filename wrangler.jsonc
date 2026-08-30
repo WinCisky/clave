@@ -93,7 +93,7 @@
     // in parallel, which this Worker structurally cannot do — Cloudflare allows only six
     // *connecting* sockets at once. Empty disables the feature entirely: `#kickOffProbe` in
     // `src/session.ts` is a no-op and dialling behaves exactly as it does without this section.
-    "PROBE_URL": "",
+    "PROBE_URL": "https://clave.simo.deno.net",
     // How long the Worker waits on one probe response before giving up on it. The probe itself is
     // asked to return within its own `budgetMs`, so this is a courtesy ceiling, not the real clock.
     "PROBE_TIMEOUT_MS": "4000",

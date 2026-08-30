@@ -29,6 +29,18 @@ export interface ProbeOutcome {
   /** Confirmed unreachable or not speaking this torrent. Worth remembering, but only for this
    * session — see `#probeDead` in `session.ts` for why it is not reported to bstream. */
   readonly dead: readonly string[];
+  /** How many candidates the service actually dialled before answering — `alive.length +
+   * dead.length` in the common case. Kept distinct from either list so a genuinely empty swarm
+   * (`probed: 0`) is distinguishable from "nothing came back yet" at a glance in `/debug`. */
+  readonly probed: number;
+  /** True when the service answered before sweeping every candidate — `need` satisfied early, or
+   * its own budget ran out. Either way `dead` is not exhaustive. */
+  readonly truncated: boolean;
+  /** Set only on a degrade-to-empty path (unreachable, non-2xx, malformed body). `#kickOffProbe`
+   * never awaits this — nothing acts on it — but without it a clean "0 peers found" and "the fetch
+   * itself failed" are indistinguishable from `/debug`, and `console.error` alone is not reliably
+   * observable for work that resolves outside the request that started it. */
+  readonly note?: string;
 }
 
 export interface ProbeRequest {
@@ -46,7 +58,7 @@ export interface ProbeRequest {
   readonly fetchImpl?: typeof fetch;
 }
 
-const EMPTY_OUTCOME: ProbeOutcome = { useful: [], alive: [], dead: [] };
+const EMPTY_OUTCOME: ProbeOutcome = { useful: [], alive: [], dead: [], probed: 0, truncated: false };
 
 export async function probePeers(request: ProbeRequest): Promise<ProbeOutcome> {
   if (request.baseUrl === "" || request.token === "" || request.peers.length === 0) {
@@ -76,13 +88,15 @@ export async function probePeers(request: ProbeRequest): Promise<ProbeOutcome> {
       signal,
     });
   } catch (err) {
+    const note = `fetch failed: ${describe(err)}`;
     console.error("probe unreachable", { error: describe(err) });
-    return EMPTY_OUTCOME;
+    return { ...EMPTY_OUTCOME, note };
   }
 
   if (!response.ok) {
+    const note = `status ${response.status}`;
     console.error("probe returned an error status", { status: response.status });
-    return EMPTY_OUTCOME;
+    return { ...EMPTY_OUTCOME, note };
   }
 
   let body: unknown;
@@ -90,14 +104,15 @@ export async function probePeers(request: ProbeRequest): Promise<ProbeOutcome> {
     body = await response.json();
   } catch {
     console.error("probe returned unparseable JSON");
-    return EMPTY_OUTCOME;
+    return { ...EMPTY_OUTCOME, note: "unparseable JSON" };
   }
 
   try {
     return parseProbeResponse(body);
   } catch (err) {
+    const note = `malformed response: ${describe(err)}`;
     console.error("probe returned a malformed response", { error: describe(err) });
-    return EMPTY_OUTCOME;
+    return { ...EMPTY_OUTCOME, note };
   }
 }
 
@@ -131,7 +146,12 @@ export function parseProbeResponse(body: unknown): ProbeOutcome {
     dead.push(`${ip}:${port}`);
   }
 
-  return { useful, alive, dead };
+  const probed = typeof root["probed"] === "number" && Number.isInteger(root["probed"])
+    ? root["probed"]
+    : alive.length + dead.length;
+  const truncated = root["truncated"] === true;
+
+  return { useful, alive, dead, probed, truncated };
 }
 
 function asObject(value: unknown): Record<string, unknown> {

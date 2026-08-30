@@ -146,6 +146,20 @@ export class Session extends DurableObject<Bindings> {
    */
   readonly #probeDead = new Set<string>();
   #probeInFlight = false;
+  /** For `/debug` only — `#kickOffProbe` is fire-and-forget and otherwise logs nothing on success,
+   * so without this there is no external way to tell a probe ever ran. */
+  #lastProbe:
+    | {
+      at: number;
+      sent: number;
+      probed: number;
+      truncated: boolean;
+      useful: number;
+      alive: number;
+      dead: number;
+      note?: string;
+    }
+    | null = null;
   /** How many times a peer has been requeued after going quiet. Bounded, so it cannot cycle. */
   readonly #silent = new Map<string, number>();
 
@@ -1036,6 +1050,16 @@ export class Session extends DurableObject<Bindings> {
       signal: era.signal,
     }).then((outcome) => {
       this.#probeInFlight = false;
+      this.#lastProbe = {
+        at: Date.now(),
+        sent: targets.length,
+        probed: outcome.probed,
+        truncated: outcome.truncated,
+        useful: outcome.useful.length,
+        alive: outcome.alive.length,
+        dead: outcome.dead.length,
+        ...(outcome.note !== undefined ? { note: outcome.note } : {}),
+      };
       // The era that asked may already be gone — a reconnect tore the pool down and started a new
       // one — in which case this answer is about sockets nobody is going to open.
       if (era.signal.aborted || this.#closing) return;
@@ -1244,6 +1268,12 @@ export class Session extends DurableObject<Bindings> {
       candidates: this.#candidates.length,
       dialsInFlight: this.#dialSlots.inFlight,
       deadPeers: this.#deadPeers.size,
+      probe: {
+        enabled: this.#config.probeUrl !== "" && this.#config.probeToken !== "",
+        inFlight: this.#probeInFlight,
+        probeDead: this.#probeDead.size,
+        last: this.#lastProbe,
+      },
       bannedPeers: this.#blame.bannedKeys,
       assembliesOpen: this.#store.size,
       bytesHeld: this.#store.bytesHeld,

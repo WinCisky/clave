@@ -145,6 +145,7 @@ button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent);
 button:disabled { opacity: 0.5; cursor: not-allowed; }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 button.primary:hover:not(:disabled) { filter: brightness(1.1); color: #fff; }
+button.danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, var(--border)); }
 button.danger:hover:not(:disabled) { border-color: var(--danger); color: var(--danger); }
 
 .hint { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
@@ -174,7 +175,7 @@ button.danger:hover:not(:disabled) { border-color: var(--danger); color: var(--d
 .file:hover:not(:disabled) { border-color: var(--accent); }
 .file[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
 .file:disabled { opacity: 0.45; cursor: not-allowed; }
-.file .name { flex: 1 1 auto; font-family: var(--mono); font-size: 12px; word-break: break-all; }
+.file .name { flex: 1 1 auto; font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
 .file .meta { flex: 0 0 auto; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 .file .tag {
   flex: 0 0 auto; font-size: 11px; padding: 2px 7px; border-radius: 999px;
@@ -197,6 +198,8 @@ details.others .files { margin-top: 8px; }
 #storage-refresh { font-size: 12px; padding: 4px 9px; }
 
 .stored { display: flex; flex-direction: column; gap: 6px; }
+
+.storage-foot { margin-top: 12px; }
 
 .stored-row {
   display: flex; align-items: stretch; gap: 8px;
@@ -251,15 +254,6 @@ details.others .files { margin-top: 8px; }
   text-overflow: ellipsis;
 }
 
-progress {
-  width: 100%; height: 8px; margin-bottom: 16px;
-  appearance: none; border: none; border-radius: 999px;
-  background: var(--cell-0); overflow: hidden;
-}
-progress::-webkit-progress-bar { background: var(--cell-0); }
-progress::-webkit-progress-value { background: var(--cell-3); }
-progress::-moz-progress-bar { background: var(--cell-3); }
-
 /* --- the grid --------------------------------------------------------------------------------- */
 
 .grid-wrap {
@@ -268,6 +262,7 @@ progress::-moz-progress-bar { background: var(--cell-3); }
   background: var(--bg);
   padding: 12px;
   overflow-x: auto;
+  margin-bottom: 12px;
 }
 
 .grid {
@@ -294,7 +289,7 @@ progress::-moz-progress-bar { background: var(--cell-3); }
 
 .legend {
   display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
-  margin-top: 12px; color: var(--muted); font-size: 12px;
+  margin-top: 12px; margin-bottom: 12px; color: var(--muted); font-size: 12px;
 }
 .legend span { display: inline-flex; align-items: center; gap: 5px; }
 .legend i { width: 11px; height: 11px; border-radius: 2px; display: inline-block; }
@@ -327,18 +322,6 @@ progress::-moz-progress-bar { background: var(--cell-3); }
   width: 100%;
   max-height: 70vh;
   background: #000;
-}
-
-/*
- * What has been downloaded, laid out along the same axis as the video's own scrubber. Native
- * controls cannot show this, and it is the one thing a viewer of a torrent stream actually needs to
- * see: where seeking will be instant and where it will wait.
- */
-.strip {
-  height: 6px;
-  background: color-mix(in srgb, var(--text) 14%, transparent);
-  background-image: var(--runs, none);
-  background-repeat: no-repeat;
 }
 
 .tracks {
@@ -382,12 +365,41 @@ progress::-moz-progress-bar { background: var(--cell-3); }
 /* A route that needed work is worth noticing; a plain copy is not. */
 .route-transcode-audio, .route-legacy { color: var(--warn); }
 
-/* --- page 2 layout: back at the top, save/reset above the stats they describe --------------------- */
+/* --- page 2 layout: back at the top, grid right under the player, save/reset above the stats ----- */
 
 .page-nav { margin-bottom: 16px; }
 
+#back { display: inline-flex; align-items: center; gap: 6px; }
+#back svg { width: 1em; height: 1em; flex: 0 0 auto; }
+
 .save-row {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  margin-bottom: 16px;
+  margin-bottom: 8px;
 }
-.save-row .hint { flex: 1 1 220px; margin: 0; }
+.save-hint { margin: 8px 0 16px; }
+
+/* --- mobile ------------------------------------------------------------------------------------- */
+
+@media (max-width: 640px) {
+  body { padding: 16px 12px 48px; }
+
+  /* The episode list: name gets its own line instead of being squeezed against tag + meta. */
+  .file { flex-wrap: wrap; row-gap: 6px; }
+  .file .name { flex: 1 1 100%; }
+
+  .stored-main { flex-wrap: wrap; row-gap: 6px; }
+  .stored-main .name { flex: 1 1 100%; }
+  .stored-main .file-name { white-space: normal; overflow-wrap: anywhere; }
+
+  #step-recover .stats {
+    grid-template-columns: repeat(auto-fit, minmax(108px, 1fr));
+    gap: 10px;
+  }
+  .stat dd { font-size: 14px; }
+
+  .save-row button { flex: 1 1 auto; }
+
+  .player video { max-height: 45vh; }
+
+  .legend { gap: 8px 12px; font-size: 11px; }
+}

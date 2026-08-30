@@ -13,15 +13,11 @@ import { Sink } from "./mse.js";
 import { ROUTE, planLegacyEncoders, probeFile } from "./probe.js";
 import { extractCues, readSubtitleTracks } from "./subtitles.js";
 
-/** Enough buffered to be worth starting. Below this a viewer just watches it stall. */
-const START_SECONDS = 2;
-
 export class Player {
   #post;
   #store;
   #sink = null;
   #engine = null;
-  #plan = null;
   #layout = null;
   #subtitleRun = 0;
   #closed = false;
@@ -42,7 +38,6 @@ export class Player {
   /** A verified piece landed. Wakes whatever read was waiting for it. */
   pieceArrived() {
     this.#store.pieceArrived();
-    if (this.#sink !== null) this.#reportAvailability();
   }
 
   /** The relay has given up. Better to fail a read loudly than to leave a spinner turning. */
@@ -73,7 +68,6 @@ export class Player {
       plan.mime = encoders.mime;
     }
 
-    this.#plan = plan;
     this.#sink = new Sink();
     const handle = this.#sink.handle;
     // The page attaches this to the video element, which is what opens the MediaSource.
@@ -115,7 +109,6 @@ export class Player {
       this.#post({ type: "player_engine", engine: "mediabunny" });
     }
 
-    this.#reportAvailability();
     void this.#findSubtitles();
     await this.#engine.play(0);
   }
@@ -162,20 +155,6 @@ export class Player {
     const first = tracks.find((track) => track.supported && track.isDefault)
       ?? tracks.find((track) => track.supported);
     if (first !== undefined) void this.chooseSubtitles(first.number);
-  }
-
-  #reportAvailability() {
-    const contiguous = this.#store.contiguousFrom(0);
-    this.#post({
-      type: "availability",
-      ranges: this.#store.availableRanges(),
-      size: this.#store.size,
-      // Enough at the front to be worth pressing play. Reported rather than enforced — a viewer who
-      // wants to watch a stuttering stream is allowed to.
-      startable: contiguous > 0 && (this.#plan?.duration == null
-        ? contiguous > 4 * 1024 * 1024
-        : contiguous / this.#store.size * this.#plan.duration > START_SECONDS),
-    });
   }
 
   close() {

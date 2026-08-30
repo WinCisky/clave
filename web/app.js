@@ -61,11 +61,9 @@ const el = {
   recoverNote: $("recover-note"),
   recoverMessage: $("recover-message"),
   grid: $("grid"),
-  bar: $("bar"),
   log: $("log"),
   watchMessage: $("watch-message"),
   video: $("video"),
-  strip: $("strip"),
   tracks: $("tracks"),
   audioLabel: $("audio-label"),
   audioTrack: $("audio-track"),
@@ -256,9 +254,7 @@ function teardownSession() {
 
   el.grid.replaceChildren();
   el.log.replaceChildren();
-  el.bar.value = 0;
   el.save.disabled = true;
-  el.strip.style.removeProperty("--runs");
   el.tracks.hidden = true;
   el.audioLabel.hidden = true;
   el.subLabel.hidden = true;
@@ -546,8 +542,6 @@ function prepareGrid(file) {
   }
   el.grid.replaceChildren(fragment);
 
-  el.bar.max = total;
-  el.bar.value = 0;
   el.stat.pieces.textContent = `0 / ${total}`;
   el.recoverNote.textContent = `${file.name} · ${formatBytes(file.length)} · pieces ${range.first}–${range.last}`;
   el.steps.recover.hidden = false;
@@ -658,9 +652,6 @@ function onWorkerMessage(message_) {
     case "player_stat":
       onPlayerStat(message_.stat);
       break;
-    case "availability":
-      paintStrip(message_);
-      break;
     case "subtitle_tracks":
       fillSubtitleTracks(message_.tracks);
       break;
@@ -725,7 +716,6 @@ function paint(pieceIndex, className) {
 }
 
 function renderProgress(p) {
-  el.bar.value = p.verified;
   // Half a film saved is a file that will not open, so this waits for the last piece.
   el.save.disabled = p.verified < p.total;
   el.stat.pieces.textContent = `${p.verified} / ${p.total}`;
@@ -878,24 +868,6 @@ function onPlayerStat(stat) {
     log(`player: ${stat.message}`, true);
   }
   if (stat.type === "buffer_complete") el.watchStat.buffered.textContent = "complete";
-}
-
-/**
- * Paint which parts of the file are here, on the same axis as the video's own scrubber.
- *
- * A gradient with hard stops rather than a node per run: a torrent with a hundred holes would
- * otherwise be a hundred elements repainted on every piece.
- */
-function paintStrip({ ranges, size, startable }) {
-  const stops = [];
-  for (const [from, to] of ranges) {
-    stops.push(`transparent ${(from / size) * 100}%`,
-               `var(--cell-2) ${(from / size) * 100}%`,
-               `var(--cell-2) ${(to / size) * 100}%`,
-               `transparent ${(to / size) * 100}%`);
-  }
-  el.strip.style.setProperty("--runs",
-    stops.length === 0 ? "none" : `linear-gradient(to right, ${stops.join(",")})`);
 }
 
 function fillAudioTracks(audios, selected) {
