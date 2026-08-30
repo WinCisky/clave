@@ -166,6 +166,13 @@ const FIXTURES = [
   "/fixtures/h264-eac3.mkv",
   "/fixtures/h264-dts.mkv",
   "/fixtures/h264-eac3-subs.mkv",
+  // The Matroska language trap: an ordinary file, and a 10-bit HEVC one, that muxed nothing at all
+  // until a `LanguageBCP47` tag stopped reaching the muxer verbatim.
+  "/fixtures/h264-langietf.mkv",
+  "/fixtures/hevc10-eac3-ietf.mkv",
+  "/fixtures/hevc10-eac3-eng.mkv",
+  // Playable video, undecodable sound. Must play silently rather than be refused for its codec.
+  "/fixtures/hevc10-truehd.mkv",
   "/fixtures/xvid-ac3.avi",
   "/fixtures/theora-vorbis.ogv",
   "/fixtures/theora-dupframes.ogv",

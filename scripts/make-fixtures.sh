@@ -62,6 +62,53 @@ ffmpeg $q -i h264-eac3.mkv -i subs.srt -map 0 -map 1 -c copy -c:s srt \
   -metadata:s:s:0 language=eng -metadata:s:s:0 title=English h264-eac3-subs.mkv
 rm -f subs.srt
 
+# The Matroska language trap, and the files that pin it.
+#
+# mkvmerge has written a `LanguageIETF` element on every track it muxes since 2020, and mediabunny
+# hands that element's primary subtag back unvalidated — so a track tagged `en-US` arrives as `"en"`,
+# and the MP4 muxer rejects it before a single fragment is written. ffmpeg will not emit that element
+# (it refuses `en` and writes `und`), so it is patched in afterwards. The patch is a rename plus a
+# same-length value, which is why it needs no EBML rewriting: `22 B5 9C` is `Language` and
+# `22 B5 9D` is `LanguageBCP47`, and `eng` becomes `en-`, whose primary subtag is the invalid `en`.
+patch_language() {
+  node -e '
+    const fs = require("fs");
+    const bytes = fs.readFileSync(process.argv[1]);
+    const language = Buffer.from([0x22, 0xB5, 0x9C, 0x83, 0x65, 0x6E, 0x67]);  // Language = "eng"
+    let at = 0, patched = 0;
+    while ((at = bytes.indexOf(language, at)) !== -1) {
+      bytes[at + 2] = 0x9D;                       // -> LanguageBCP47
+      bytes[at + 6] = process.argv[3].charCodeAt(2);
+      patched++;
+      at += language.length;
+    }
+    if (patched === 0) throw new Error("no Language element found in " + process.argv[1]);
+    fs.writeFileSync(process.argv[2], bytes);
+  ' "$1" "$2" "$3"
+}
+
+# An ordinary H.264 file that would not play at all: nothing wrong with it but the language string.
+ffmpeg $q $short -c:v libx264 -preset veryfast -pix_fmt yuv420p -c:a aac \
+  -metadata:s:v:0 language=eng -metadata:s:a:0 language=eng h264-lang.mkv
+patch_language h264-lang.mkv h264-langietf.mkv "en-"
+
+# 10-bit HEVC with a 5.1 E-AC-3 track — the shape of the x265 releases that failed. Made twice from
+# the same bytes, differing only in the language string, so a failure can be attributed to that and
+# nothing else.
+ffmpeg $q $short -c:v libx265 -preset ultrafast -pix_fmt yuv420p10le -x265-params log-level=none \
+  -c:a eac3 -ac 6 -b:a 384k -metadata:s:v:0 language=eng -metadata:s:a:0 language=eng \
+  hevc10-eac3.mkv
+patch_language hevc10-eac3.mkv hevc10-eac3-ietf.mkv "en-"
+patch_language hevc10-eac3.mkv hevc10-eac3-eng.mkv "eng"
+rm -f hevc10-eac3.mkv h264-lang.mkv
+
+# HEVC with a soundtrack nothing here can decode — mediabunny does not even recognise `A_TRUEHD`.
+# This is the file that used to be refused as "unplayable HEVC" when the video was never the problem;
+# it must now play, silently, and say so.
+ffmpeg $q $short -strict -2 -c:v libx265 -preset ultrafast -pix_fmt yuv420p10le \
+  -x265-params log-level=none -c:a truehd -ac 6 -strict -2 \
+  -metadata:s:v:0 language=eng -metadata:s:a:0 language=eng hevc10-truehd.mkv
+
 # Long enough that the relay's head and tail bootstrap windows cover only a fraction of it, which is
 # what makes the self-test's trickle mode actually block a read and then resume.
 ffmpeg $q $long -c:v libx264 -preset veryfast -pix_fmt yuv420p -g 50 -c:a aac -movflags +faststart long-h264-aac.mp4

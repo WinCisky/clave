@@ -6,6 +6,7 @@
  */
 
 import { CONFIG } from "./config.js";
+import { languageLabel } from "./player/language.js";
 import {
   decodePieceHashes,
   describeFiles,
@@ -615,6 +616,25 @@ const ROUTE_LABEL = {
   legacy: "full transcode",
 };
 
+/**
+ * A track's language, as a person would say it.
+ *
+ * Files carry `eng`, `en` or `en-US` interchangeably and none of them belong in a menu. `und` and
+ * anything else without a name drop out entirely, leaving the codec to identify the track.
+ */
+const describeLanguage = (raw) =>
+  languageLabel(raw) ?? (typeof raw === "string" && raw !== "" && raw !== "und" ? raw : null);
+
+/** What to put in the Audio reading when nothing could be played. */
+function describeSilence(audios) {
+  if (audios.length === 0) return "none";
+  // A null codec is mediabunny saying it does not know this track at all — TrueHD and its relatives
+  // are not in its vocabulary, so there is no name to print. The column is narrow; the notice above
+  // it carries the detail.
+  const names = [...new Set(audios.map((audio) => audio.codec).filter(Boolean))];
+  return names.length === 0 ? "no decoder" : `${names.join(", ")} — no decoder`;
+}
+
 function receiveFile(name, blob) {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
@@ -641,11 +661,18 @@ function onPlayerReady(plan, handle) {
 
   const chosen = plan.audios.find((audio) => audio.id === plan.audio?.id) ?? null;
   el.watchStat.audio.textContent = chosen === null
-    ? "none"
+    ? describeSilence(plan.audios)
     : `${chosen.codec} ${chosen.channels}ch` +
       (chosen.copy ? "" : ` → ${chosen.encodedAs}${chosen.encodedChannels !== chosen.channels ? ` ${chosen.encodedChannels}ch` : ""}`);
 
   fillAudioTracks(plan.audios, plan.audio?.id ?? null);
+  // A film that plays without sound and says nothing about it reads as a broken player. The video
+  // is still the thing worth watching, so this is a notice, not an error.
+  if (plan.audioReason !== null && plan.audioReason !== undefined) {
+    message(el.watchMessage, "warn",
+      `Playing without sound: ${plan.audioReason}. The picture is unaffected — save the file to ` +
+      `keep the original soundtrack.`);
+  }
   if (plan.route === "legacy") {
     message(el.watchMessage, "warn",
       "This file uses a codec no browser can decode, so it is being decoded in WebAssembly and " +
@@ -717,8 +744,8 @@ function fillAudioTracks(audios, selected) {
   for (const audio of usable) {
     const option = document.createElement("option");
     option.value = String(audio.id);
-    const label = [audio.language, audio.name, `${audio.codec} ${audio.channels}ch`]
-      .filter((part) => part != null && part !== "" && part !== "und");
+    const label = [describeLanguage(audio.language), audio.name, `${audio.codec} ${audio.channels}ch`]
+      .filter((part) => part != null && part !== "");
     option.textContent = label.join(" · ");
     option.selected = audio.id === selected;
     el.audioTrack.append(option);
@@ -744,7 +771,7 @@ function fillSubtitleTracks(tracks) {
   for (const track of usable) {
     const option = document.createElement("option");
     option.value = String(track.number);
-    option.textContent = [track.language, track.name].filter((p) => p && p !== "und").join(" · ")
+    option.textContent = [describeLanguage(track.language), track.name].filter(Boolean).join(" · ")
       || `track ${track.number}`;
     option.selected = track.isDefault;
     el.subTrack.append(option);

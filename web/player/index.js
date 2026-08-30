@@ -196,6 +196,7 @@ function summarise(plan) {
     duration: plan.duration ?? null,
     mime: plan.mime ?? null,
     reason: plan.reason ?? null,
+    audioReason: plan.audioReason ?? null,
     video: plan.video ?? null,
     audios: (plan.audios ?? []).map((audio) => ({
       id: audio.id,

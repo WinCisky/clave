@@ -155,6 +155,15 @@ async function start(options) {
   socket.onerror = () => fail("socket_error", "the WebSocket reported an error");
   socket.onclose = (event) => {
     post({ type: "closed", code: event.code, reason: event.reason });
+    // Nothing reconnects, so a close before the last piece means no more bytes are coming. Any read
+    // the player is blocked on has to be told that: waiting on a piece nobody will ever send shows
+    // up as a spinner that turns for ever and says nothing, which is indistinguishable from a bug
+    // in the player. Bytes already stored still read fine — only the missing ones now fail.
+    if (!state.finished) {
+      state.player?.exhaust(`the relay disconnected (${event.code}) before the file was complete`);
+      fail("relay_disconnected",
+        `the relay closed the connection (${event.code}) with the download unfinished`);
+    }
   };
 }
 

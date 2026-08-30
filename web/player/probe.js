@@ -113,7 +113,12 @@ export async function probeFile(source) {
       reason: videoParam === null
         ? `the video track's codec parameters could not be read`
         : `this browser will not play ${videoParam} in MP4` +
-          (video.codec === "hevc" ? " — HEVC needs a hardware decoder the browser can reach" : ""),
+          // Asked rather than assumed. Chromium 151 on this machine plays HEVC through the platform
+          // decoder, so a blanket "HEVC needs hardware you do not have" was simply untrue, and it
+          // sent people off to install a desktop player for a file the browser could open.
+          (await decodable(videoParam)
+            ? ", though WebCodecs can decode it — the media pipeline is the part refusing it"
+            : ", and WebCodecs cannot decode it either"),
     };
   }
 
@@ -122,25 +127,18 @@ export async function probeFile(source) {
     audios.push(await describeAudio(track, videoParam));
   }
 
-  // Prefer a track that needs no work, then one that only needs re-encoding. A TrueHD remux almost
-  // always carries an AC-3 companion, and taking it beats refusing the file.
-  const chosen =
-    audios.find((a) => a.usable && a.copy) ??
-    audios.find((a) => a.usable) ??
-    null;
+  const chosen = chooseAudioTrack(audios);
 
   input.dispose();
 
-  if (audioTracks.length > 0 && chosen === null) {
-    return {
-      route: ROUTE.LEGACY,
-      container,
-      duration,
-      video: videoInfo,
-      audios,
-      reason: "no audio track here can be decoded, natively or in wasm",
-    };
-  }
+  // A soundtrack nobody can decode used to condemn the whole file to the compatibility route, which
+  // then refused it for the *video* codec — that is how a perfectly playable HEVC film ended up
+  // being described as unplayable HEVC. The video is what someone came for; it plays, and the panel
+  // says which track was dropped and why.
+  const audioReason = audioTracks.length > 0 && chosen === null
+    ? `no audio track here can be decoded, natively or in wasm (${
+        audios.map((a) => `${a.codec ?? "unrecognised codec"}, ${a.channels ?? "?"}ch`).join("; ")})`
+    : null;
 
   return {
     route: chosen === null || chosen.copy ? ROUTE.COPY : ROUTE.AUDIO,
@@ -149,8 +147,20 @@ export async function probeFile(source) {
     video: videoInfo,
     audios,
     audio: chosen,
+    audioReason,
     mime: mp4MimeFor([videoParam, chosen?.outputParameter ?? null]),
   };
+}
+
+/**
+ * Which audio track to play.
+ *
+ * A track that needs no work first, then one that only needs re-encoding. A TrueHD remux almost
+ * always carries an AC-3 companion, and taking it beats refusing the file. Pure, so the preference
+ * order can be tested without a browser.
+ */
+export function chooseAudioTrack(audios) {
+  return audios.find((a) => a.usable && a.copy) ?? audios.find((a) => a.usable) ?? null;
 }
 
 /**
@@ -265,3 +275,16 @@ async function durationOf(input) {
 }
 
 const describe = (err) => (err instanceof Error ? err.message : String(err));
+
+/** Whether WebCodecs can decode a codec the media pipeline has refused. Diagnostic only. */
+async function decodable(parameter) {
+  try {
+    if (typeof VideoDecoder === "undefined") return false;
+    const { supported } = await VideoDecoder.isConfigSupported({
+      codec: parameter, codedWidth: 1920, codedHeight: 1080,
+    });
+    return supported === true;
+  } catch {
+    return false;
+  }
+}

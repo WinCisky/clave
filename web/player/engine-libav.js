@@ -50,10 +50,12 @@ const AVMEDIA_TYPE_AUDIO = 1;
 /**
  * Codecs this build leaves out on purpose, because the browser decodes them itself in hardware.
  *
- * Reaching route C with one of these means the browser refused it — an HEVC file on a machine with
- * no hardware decoder, say — and there is no second opinion worth offering, since decoding HEVC or
- * AV1 in WebAssembly is far slower than realtime. Asked by name rather than by codec id: the ids
- * are an unstable thing to hardcode, and libav can simply be asked whether it has the decoder.
+ * Reaching route C with one of these means the browser genuinely refused the *video* — the probe no
+ * longer sends a playable picture here just because its soundtrack could not be decoded, which is
+ * what used to make an ordinary HEVC film be described as unplayable HEVC. There is no second
+ * opinion worth offering either way: decoding HEVC or AV1 in WebAssembly is far slower than
+ * realtime. Asked by name rather than by codec id: the ids are an unstable thing to hardcode, and
+ * libav can simply be asked whether it has the decoder.
  */
 const BROWSER_ONLY = new Set(["h264", "hevc", "av1", "vp9", "vp8"]);
 
@@ -133,8 +135,8 @@ export class LibavEngine {
     if ((await this.#libav.avcodec_find_decoder(this.#video.codec_id)) === 0) {
       const name = await this.#libav.avcodec_get_name(this.#video.codec_id);
       throw new Error(BROWSER_ONLY.has(name)
-        ? `this file is ${name.toUpperCase()}, which this browser will not play and which the ` +
-          `compatibility decoder deliberately omits — decoding it in WebAssembly would be far ` +
+        ? `this file's video is ${name.toUpperCase()}, which this browser refused and which the ` +
+          `compatibility decoder omits on purpose — decoding it in WebAssembly would run far ` +
           `slower than realtime. Save the file and play it in a desktop player instead.`
         : `no decoder for ${name} in this build`);
     }

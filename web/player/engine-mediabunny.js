@@ -23,6 +23,7 @@ import {
   Output,
 } from "../vendor/mediabunny.min.mjs";
 import { concat, fragmentedMp4 } from "./fmp4.js";
+import { toIso6392T } from "./language.js";
 
 /** Stop feeding the buffer once this many seconds are ready ahead of the playhead. */
 const TARGET_BUFFER_SECONDS = 30;
@@ -102,7 +103,9 @@ export class MediabunnyEngine {
     const output = new Output({ format: segments.format, target: new NullTarget() });
 
     const videoSource = new EncodedVideoPacketSource(this.#videoTrack.codec);
-    output.addVideoTrack(videoSource, { languageCode: this.#videoTrack.languageCode ?? undefined });
+    // Never the track's own string: a Matroska `LanguageBCP47` of `en-US` reaches us as `"en"`, and
+    // the muxer rejects anything that is not three letters — before a single fragment is written.
+    output.addVideoTrack(videoSource, { languageCode: toIso6392T(this.#videoTrack.languageCode) ?? undefined });
 
     // Where the video will really begin: the key packet at or before the requested time. Audio has
     // to start there too — asking it for `fromTime` instead leaves the sound seconds ahead of the
@@ -178,7 +181,7 @@ export class MediabunnyEngine {
 
     if (plan.copy) {
       const source = new EncodedAudioPacketSource(track.codec);
-      output.addAudioTrack(source, { languageCode: track.languageCode ?? undefined });
+      output.addAudioTrack(source, { languageCode: toIso6392T(track.languageCode) ?? undefined });
       const config = await track.getDecoderConfig();
       const sink = new EncodedPacketSink(track);
       let first = true;
@@ -201,7 +204,7 @@ export class MediabunnyEngine {
         ? { numberOfChannels: plan.encode.numberOfChannels }
         : undefined,
     });
-    output.addAudioTrack(source, { languageCode: track.languageCode ?? undefined });
+    output.addAudioTrack(source, { languageCode: toIso6392T(track.languageCode) ?? undefined });
     const sink = new AudioSampleSink(track);
     return {
       items: sink.samples(fromTime),

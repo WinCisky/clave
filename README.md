@@ -221,7 +221,7 @@ of four answers, then says which and why:
 | copy | demux, remux to fragmented MP4, append. No decoding at all | H.264/HEVC/VP9/AV1 with AAC/Opus/MP3/FLAC in MP4, MOV, MKV, WebM, TS |
 | transcode audio | video copied untouched; audio decoded in wasm and re-encoded | AC-3, E-AC-3, DTS — no browser ships a decoder for any of them |
 | legacy | libav.js demuxes and decodes; WebCodecs re-encodes in hardware | AVI, WMV/ASF, FLV, MPEG-PS, Ogg; Xvid/DivX, MPEG-2, WMV3/VC-1, Theora, Cinepak |
-| unplayable | says which codec, in which container, and what this browser lacks | HEVC with no hardware decoder, and anything else with no path |
+| unplayable | says which codec, in which container, and what this browser lacks | a video codec neither the browser nor the compatibility build can decode |
 
 The video bitstream is **copied, never re-encoded**, on the first two routes — verified byte-identical
 to the source. Only the legacy route re-encodes, and only because nothing else can.
@@ -269,7 +269,7 @@ Every fixture: **750 frames — 30 s at 25 fps, exactly — zero decode errors**
 **bit-identical** to its source. The 440 Hz test tone comes back at **439 Hz** through both the
 straight copy and the full AC-3 → wasm decode → AAC encode path, and the Xvid transcode measures
 **39 dB PSNR** against its source. Seeks land within 0.1 s of each other on video and audio across
-MP4, MKV, AVI and MPEG-PS. HEVC is refused, by name, with the reason.
+MP4, MKV, AVI and MPEG-PS. A video codec nothing here can decode is refused by name, with the reason.
 
 The same harness has a trickle mode that reveals pieces over time in the relay's own order — head
 window, tail window, then sequential — so a demuxer blocking on absent bytes and resuming is
@@ -422,9 +422,22 @@ land in it and one of them worked.
 
 ## Things playback got wrong first
 
-Four of these looked like they were working. That is the point of the self-test: each one produced
+Some of these looked like they were working. That is the point of the self-test: each one produced
 plausible segment counts and plausible byte totals, and only a real decoder disagreed.
 
+- **Two letters stopped a large share of MKV releases from playing at all.** mkvmerge has written a
+  `LanguageIETF` element on every track it muxes since 2020. mediabunny validates Matroska's older
+  `Language` element against `/^[a-z]{3}$/` and falls back to `und`, but hands the newer element's
+  primary subtag back untouched — so a track tagged `en-US` arrives as `"en"`, and the MP4 muxer,
+  which packs a language into three five-bit letters, throws before a single fragment is written.
+  The symptom was a `TypeError` and a video that never started, on files with nothing else wrong
+  with them. Nothing reaches the muxer now without passing through `web/player/language.js`.
+- **A file was called unplayable HEVC when the video was never the problem.** The probe demoted the
+  *whole file* to the compatibility route whenever no audio track could be decoded — and that route
+  refuses HEVC on purpose, so a TrueHD remux of a film the browser plays perfectly reported itself
+  as a codec the browser cannot play. Both halves were wrong: the diagnosis and the premise. The
+  route now falls back to video-only, and the message names the track that actually failed. Pinned
+  by three fixtures made from the same bytes, differing only in a language string.
 - **The init segment was `ftyp` alone — 28 bytes.** `moov` is not written when `output.start()`
   resolves; it appears once the first packets have been muxed. Appending what had accumulated by
   then silently dropped it, leaving every fragment referring to tracks the SourceBuffer had never
@@ -506,9 +519,15 @@ plausible segment counts and plausible byte totals, and only a real decoder disa
 - **Styled subtitles (ASS/SSA) are listed but not rendered**, and neither are bitmap ones (PGS,
   VobSub). Text tracks are also read only from Matroska, which is where they actually live in
   practice; MP4's `tx3g` is not.
-- **HEVC without a hardware decoder cannot be played.** The compatibility build deliberately omits
+- **A video codec the browser lacks cannot be played.** The compatibility build deliberately omits
   H.264, HEVC, AV1 and VP8/9 — decoding those in WebAssembly would be far slower than realtime, so
-  there is no second opinion to offer and the page says so by name instead.
+  there is no second opinion to offer and the page says so by name instead. In practice this is
+  rarer than it sounds: Chromium 151 on Linux plays HEVC, Main and Main10, through the platform
+  decoder, and both `MediaSource.isTypeSupported` and `VideoDecoder.isConfigSupported` are asked
+  rather than assumed.
+- **A soundtrack nobody can decode does not stop the film.** TrueHD, DTS-HD MA and their kind have
+  no decoder here and mediabunny does not even name them, so the track is dropped, the video plays,
+  and the panel says which codec went and why. Saving the file keeps the original soundtrack.
 - **The picture was never watched moving.** In the automation the browser's document reports
   `hidden`, so Chrome will not run a media element's playback clock. Everything up to that does now
   verify there: the handle attaches, the segments are accepted, `readyState` reaches
